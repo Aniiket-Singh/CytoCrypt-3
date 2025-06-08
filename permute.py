@@ -1,8 +1,6 @@
 # File: permute.py
 import numpy as np
 
-# Permutation utilities for scrambling
-
 def build_permutation(seq):
     """Returns indices that would sort the sequence"""
     return np.argsort(seq)
