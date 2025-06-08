@@ -5,11 +5,6 @@ import numpy as np
 
 class ChaoticMapGenerator:
     def __init__(self, seed_vals, map_params, warmup=1000):
-        """
-        seed_vals: dict of initial seeds, e.g. {'x0': 0.123}
-        map_params: dict of map-specific parameters, e.g. {'mu': 3.99}
-        warmup: number of initial iterations to discard
-        """
         self.state = seed_vals.copy()
         self.params = map_params.copy()
         for _ in range(warmup):
