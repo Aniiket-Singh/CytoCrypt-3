@@ -1,10 +1,19 @@
-import argparse
+# image_analysis.py
 import numpy as np
 from PIL import Image
 import matplotlib.pyplot as plt
 from scipy.stats import pearsonr
 
+# === User-configurable paths ===
+# Enter the file paths for your images below
+original_path = '.\images\lena.png'
+encrypted_path = '.\images\lenacrypted2.png'
+decrypted_path = '.\images\lenadecrypted2.png'  # Set to None if not using
+output_hist_path = 'lena_plot2.png'         # Set to None to display instead of saving
+
+# === Utility functions ===
 def load_image(path, mode='L'):
+    """Load an image as a NumPy array in the specified mode."""
     img = Image.open(path).convert(mode)
     return np.array(img)
 
@@ -25,28 +34,27 @@ def plot_histograms(orig, enc, save_path=None):
     plt.tight_layout()
     if save_path:
         plt.savefig(save_path)
+        print(f"Histogram plot saved to {save_path}")
     else:
         plt.show()
 
 # 2. NPCR and UACI
 def compute_npcr_uaci(orig, enc):
-    orig = orig.flatten().astype(np.int32)
-    enc = enc.flatten().astype(np.int32)
+    orig_flat = orig.flatten().astype(np.int32)
+    enc_flat = enc.flatten().astype(np.int32)
     # NPCR
-    diff = orig != enc
+    diff = orig_flat != enc_flat
     npcr = np.sum(diff) / diff.size * 100
     # UACI
-    uaci = np.mean(np.abs(orig - enc) / 255) * 100
+    uaci = np.mean(np.abs(orig_flat - enc_flat) / 255) * 100
     return npcr, uaci
 
 # 3. Correlation coefficients
 def correlation_coefficients(img):
-    # ensure 2D array
     h, w = img.shape
-    # horizontal: pairs (i,j) and (i,j+1)
     horiz = [(img[i,j], img[i,j+1]) for i in range(h) for j in range(w-1)]
-    vert = [(img[i,j], img[i+1,j]) for i in range(h-1) for j in range(w)]
-    diag = [(img[i,j], img[i+1,j+1]) for i in range(h-1) for j in range(w-1)]
+    vert  = [(img[i,j], img[i+1,j]) for i in range(h-1) for j in range(w)]
+    diag  = [(img[i,j], img[i+1,j+1]) for i in range(h-1) for j in range(w-1)]
     def corr(pairs):
         a, b = zip(*pairs)
         return pearsonr(a, b)[0]
@@ -58,41 +66,44 @@ def entropy(img):
     hist = hist[hist>0]
     return -np.sum(hist * np.log2(hist))
 
+# === Main Analysis ===
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Image encryption analysis')
-    parser.add_argument('--original', required=True, help='Path to original plaintext image')
-    parser.add_argument('--encrypted', required=True, help='Path to encrypted image')
-    parser.add_argument('--decrypted', required=False, help='Path to decrypted image (optional)')
-    parser.add_argument('--output-hist', required=False, help='Path to save histogram plot')
-    args = parser.parse_args()
+    # Load images
+    orig = load_image(original_path)
+    enc = load_image(encrypted_path)
 
-    orig = load_image(args.original)
-    enc = load_image(args.encrypted)
-
+    # 1. Histogram Analysis
     print('1. Histogram Analysis:')
-    plot_histograms(orig, enc, save_path=args.output_hist)
+    plot_histograms(orig, enc, save_path=output_hist_path)
 
+    # 2. NPCR and UACI
     print('\n2. NPCR and UACI:')
     npcr, uaci = compute_npcr_uaci(orig, enc)
     print(f'NPCR: {npcr:.4f}%')
     print(f'UACI: {uaci:.4f}%')
 
+    # 3. Correlation Coefficients
     print('\n3. Correlation Coefficients:')
     cor_orig = correlation_coefficients(orig)
-    cor_enc = correlation_coefficients(enc)
-    dirs = ['Horizontal', 'Vertical', 'Diagonal']
-    for d, co in zip(dirs, cor_orig):
-        print(f'Original {d} correlation: {co:.6f}')
-    for d, co in zip(dirs, cor_enc):
-        print(f'Encrypted {d} correlation: {co:.6f}')
+    cor_enc  = correlation_coefficients(enc)
+    directions = ['Horizontal', 'Vertical', 'Diagonal']
+    for d, c in zip(directions, cor_orig):
+        print(f'Original {d} correlation: {c:.6f}')
+    for d, c in zip(directions, cor_enc):
+        print(f'Encrypted {d} correlation: {c:.6f}')
 
+    # 4. Entropy
     print('\n4. Entropy:')
     ent_orig = entropy(orig)
-    ent_enc = entropy(enc)
+    ent_enc  = entropy(enc)
     print(f'Original Image Entropy: {ent_orig:.6f} bits')
     print(f'Encrypted Image Entropy: {ent_enc:.6f} bits')
 
-    if args.decrypted:
-        dec = load_image(args.decrypted)
-        matches = np.array_equal(orig, dec)
-        print(f"\nDecryption correctness: {'Success' if matches else 'Failure'}")
+    # 5. Decryption correctness (optional)
+    if decrypted_path:
+        try:
+            dec = load_image(decrypted_path)
+            match = np.array_equal(orig, dec)
+            print(f"\nDecryption correctness: {'Success' if match else 'Failure'}")
+        except FileNotFoundError:
+            print(f"\nDecrypted image not found at {decrypted_path}")

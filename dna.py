@@ -13,18 +13,18 @@ class DNAEncoder:
         {'00':'T','01':'G','10':'C','11':'A'},
     ]
 
-    def encode(self, flat_pixels, rule_indices):
-        dna_list = []
-        for pix, r in zip(flat_pixels, rule_indices):
+    def encode(self, pixels, rules):
+        dna = []
+        for pix, r in zip(pixels, rules):
             bits = f"{pix:08b}"
-            rule = self.RULES[r]
-            dna_list.append(''.join(rule[bits[i:i+2]] for i in range(0, 8, 2)))
-        return dna_list
+            table = self.RULES[r]
+            dna.append(''.join(table[bits[i:i+2]] for i in range(0,8,2)))
+        return dna
 
-    def decode(self, dna_list, rule_indices):
+    def decode(self, dna, rules):
         pixels = []
-        for dna, r in zip(dna_list, rule_indices):
+        for d, r in zip(dna, rules):
             inv = {v:k for k,v in self.RULES[r].items()}
-            bits = ''.join(inv[n] for n in dna)
-            pixels.append(int(bits, 2))
+            bits = ''.join(inv[ch] for ch in d)
+            pixels.append(int(bits,2))
         return np.array(pixels, dtype=np.uint8)
