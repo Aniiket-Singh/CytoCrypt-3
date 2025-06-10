@@ -5,26 +5,33 @@ import numpy as np
 
 class ChaoticMap:
     def __init__(self, func, seed, param, warmup=1000):
+        """
+        func: chaotic map function(x, param)
+        seed: initial state x0
+        param: control parameter
+        warmup: iterations to discard
+        """
         self.func = func
         self.x = seed
         self.param = param
+        # Warm-up to remove transient effects
         for _ in range(warmup):
             self.x = self.func(self.x, self.param)
 
     def generate(self, length):
+        """
+        Generate `length` chaotic values, normalized to [0,1]
+        """
         seq = np.empty(length)
         for i in range(length):
             self.x = self.func(self.x, self.param)
             seq[i] = self.x
-        # normalize to [0,1]
         min_val, max_val = seq.min(), seq.max()
         if max_val - min_val == 0:
-            seq_norm = np.zeros_like(seq)
-        else:
-            seq_norm = (seq - min_val) / (max_val - min_val)
-        return seq_norm
+            return np.zeros_like(seq)
+        return (seq - min_val) / (max_val - min_val)
 
-# Map functions
+# Chaotic map functions
 
 def logistic_map(x, r):
     return r * x * (1 - x)
@@ -35,5 +42,5 @@ def sine_map(x, r):
 def quadratic_map(x, a):
     return a * x**2 + (1 - a) * x
 
-def tent_map(x, mu):
-    return mu * x if x < 0.5 else mu * (1 - x)
+def pwlcm_map(x, p):
+    return x/p if x < p else (1 - x)/(1 - p)
