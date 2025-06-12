@@ -6,10 +6,10 @@ from scipy.stats import pearsonr
 
 # === User-configurable paths ===
 # Enter the file paths for your images below
-original_path = '.\images\lena.png'
-encrypted_path = '.\images\lenacrypted3.png'
+original_path = 'images\lena.png'
+encrypted_path = 'encrypted.png'
 decrypted_path = ''  # Set to None if not using
-output_hist_path = 'results\lena_result_with_composite_maps.png'         # Set to None to display instead of saving
+output_hist_path = 'results\lena_result_with_r1_rgb.png'         # Set to None to display instead of saving
 
 # === Utility functions ===
 def load_image(path, mode='L'):
