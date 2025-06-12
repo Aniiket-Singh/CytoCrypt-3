@@ -2,6 +2,7 @@ import numpy as np
 from PIL import Image
 import sys
 import os
+import time
 
 # ----------------------------
 # Chaotic Map Implementations
@@ -178,244 +179,281 @@ def unscramble_block(block, chaotic_func, init, param):
     return flat_block[inv_perm].reshape(block.shape)
 
 # ----------------------------
-# Main Cryptographic Processes
+# Channel Processing Functions
 # ----------------------------
-# ====== FIXED ENCRYPTION FUNCTION ======
-def encrypt_image(image_path, keys):
-    # Load and preprocess image
-    img = Image.open(image_path).convert('L')
-    I1 = np.array(img)
-    m, n = I1.shape
+def process_channel(channel, keys, encrypt=True):
+    """Process a single image channel (encrypt or decrypt)"""
+    m, n = channel.shape
     
     # Pad to even dimensions
     m_pad = (2 - m % 2) % 2
     n_pad = (2 - n % 2) % 2
-    I1 = np.pad(I1, ((0, m_pad), (0, n_pad)), 'reflect')
-    M, N = I1.shape
+    padded = np.pad(channel, ((0, m_pad), (0, n_pad)), 'reflect')
+    M, N = padded.shape
     total_pixels = M * N
     
-    # Step 2: Dynamic DNA encoding
-    rule_seq = logistic_map(keys.rule_x0, keys.rule_r, total_pixels)
-    rule_indices = (rule_seq * 8).astype(int) % 8
+    if encrypt:
+        # Step 2: Dynamic DNA encoding
+        rule_seq = logistic_map(keys.rule_x0, keys.rule_r, total_pixels)
+        rule_indices = (rule_seq * 8).astype(int) % 8
+        
+        I2_dna = np.empty((M, N), dtype='U4')
+        for i in range(M):
+            for j in range(N):
+                I2_dna[i,j] = dna_encode_pixel(padded[i,j], rule_indices[i*N + j])
+        
+        # Step 3: Double DNA-XOR
+        D1_dna = generate_dna_mask(M, N, keys.d1_x0, keys.d1_r)
+        D2_dna = generate_dna_mask(M, N, keys.d2_x0, keys.d2_r)
+        
+        temp_dna = dna_xor_matrix(I2_dna, D1_dna)
+        I3_dna = dna_xor_matrix(temp_dna, D2_dna)
+        
+        # Step 4: Convert to indices and reshape for blocks
+        char_array = np.array([list(dna_str) for dna_str in I3_dna.flatten()])
+        I4_int = np.vectorize({'A':0, 'T':1, 'C':2, 'G':3}.get)(char_array)
+        I4_reshaped = I4_int.reshape(2*M, 2*N)
+        
+        # Step 5: Block scrambling
+        blocks = [
+            I4_reshaped[:M, :N],
+            I4_reshaped[:M, N:],
+            I4_reshaped[M:, :N],
+            I4_reshaped[M:, N:]
+        ]
+        
+        # Assign chaotic maps to blocks
+        singer_seq = singer_map(keys.singer_x0, keys.singer_mu, 4)
+        map_assign = (singer_seq * 4).astype(int) % 4
+        
+        chaotic_funcs = [
+            lambda x, p, l: quadratic_map(x, p, l),
+            lambda x, p, l: logistic_map(x, p, l),
+            lambda x, p, l: sine_map(x, p, l),
+            lambda x, p, l: pwl_map(x, p, l)
+        ]
+        
+        params = [
+            keys.quadratic_c,
+            keys.logistic_r,
+            keys.sine_a,
+            keys.pwl_p
+        ]
+        
+        inits = [
+            keys.quadratic_x0,
+            keys.logistic_x0,
+            keys.sine_x0,
+            keys.pwl_x0
+        ]
+        
+        # Scramble blocks
+        scrambled_blocks = []
+        for i in range(4):
+            func_idx = map_assign[i]
+            scrambled = scramble_block(
+                blocks[i],
+                chaotic_funcs[func_idx],
+                inits[func_idx],
+                params[func_idx]
+            )
+            scrambled_blocks.append(scrambled)
+        
+        # Reassemble
+        top = np.hstack([scrambled_blocks[0], scrambled_blocks[1]])
+        bottom = np.hstack([scrambled_blocks[2], scrambled_blocks[3]])
+        I5_int = np.vstack([top, bottom])
+        
+        # Step 6: Convert to DNA bases and repeat Step 3
+        base_list = []
+        for base_idx in I5_int.flatten():
+            base_list.append({0: 'A', 1: 'T', 2: 'C', 3: 'G'}[base_idx])
+        
+        # Group every 4 bases into DNA strings
+        dna_strings = []
+        for i in range(0, len(base_list), 4):
+            dna_strings.append(''.join(base_list[i:i+4]))
+        
+        I5_dna = np.array(dna_strings).reshape(M, N)
+        
+        # Repeat Step 3 DNA-XOR
+        temp_dna = dna_xor_matrix(I5_dna, D1_dna)
+        I6_dna = dna_xor_matrix(temp_dna, D2_dna)
+        
+        # Step 7: Decode to image
+        I7 = np.zeros((M, N), dtype=np.uint8)
+        for i in range(M):
+            for j in range(N):
+                I7[i,j] = dna_decode_pixel(I6_dna[i,j], 0)  # Rule 0 (Rule 1)
+        
+        # Remove padding
+        return I7[:m, :n]
     
-    I2_dna = np.empty((M, N), dtype='U4')
-    for i in range(M):
-        for j in range(N):
-            I2_dna[i,j] = dna_encode_pixel(I1[i,j], rule_indices[i*N + j])
-    
-    # Step 3: Double DNA-XOR
-    D1_dna = generate_dna_mask(M, N, keys.d1_x0, keys.d1_r)
-    D2_dna = generate_dna_mask(M, N, keys.d2_x0, keys.d2_r)
-    
-    temp_dna = dna_xor_matrix(I2_dna, D1_dna)
-    I3_dna = dna_xor_matrix(temp_dna, D2_dna)
-    
-    # Step 4: Convert to indices and reshape for blocks
-    char_array = np.array([list(dna_str) for dna_str in I3_dna.flatten()])
-    I4_int = np.vectorize({'A':0, 'T':1, 'C':2, 'G':3}.get)(char_array)
-    I4_reshaped = I4_int.reshape(2*M, 2*N)
-    
-    # Step 5: Block scrambling
-    blocks = [
-        I4_reshaped[:M, :N],
-        I4_reshaped[:M, N:],
-        I4_reshaped[M:, :N],
-        I4_reshaped[M:, N:]
-    ]
-    
-    # Assign chaotic maps to blocks
-    singer_seq = singer_map(keys.singer_x0, keys.singer_mu, 4)
-    map_assign = (singer_seq * 4).astype(int) % 4
-    
-    chaotic_funcs = [
-        lambda x, p, l: quadratic_map(x, p, l),
-        lambda x, p, l: logistic_map(x, p, l),
-        lambda x, p, l: sine_map(x, p, l),
-        lambda x, p, l: pwl_map(x, p, l)
-    ]
-    
-    params = [
-        keys.quadratic_c,
-        keys.logistic_r,
-        keys.sine_a,
-        keys.pwl_p
-    ]
-    
-    inits = [
-        keys.quadratic_x0,
-        keys.logistic_x0,
-        keys.sine_x0,
-        keys.pwl_x0
-    ]
-    
-    # Scramble blocks
-    scrambled_blocks = []
-    for i in range(4):
-        func_idx = map_assign[i]
-        scrambled = scramble_block(
-            blocks[i],
-            chaotic_funcs[func_idx],
-            inits[func_idx],
-            params[func_idx]
-        )
-        scrambled_blocks.append(scrambled)
-    
-    # Reassemble
-    top = np.hstack([scrambled_blocks[0], scrambled_blocks[1]])
-    bottom = np.hstack([scrambled_blocks[2], scrambled_blocks[3]])
-    I5_int = np.vstack([top, bottom])
-    
-    # Step 6: Convert to DNA bases and repeat Step 3
-    # FIX: Properly handle DNA string formation
-    base_list = []
-    for base_idx in I5_int.flatten():
-        base_list.append({0: 'A', 1: 'T', 2: 'C', 3: 'G'}[base_idx])
-    
-    # Group every 4 bases into DNA strings
-    dna_strings = []
-    for i in range(0, len(base_list), 4):
-        dna_strings.append(''.join(base_list[i:i+4]))
-    
-    I5_dna = np.array(dna_strings).reshape(M, N)
-    
-    # Repeat Step 3 DNA-XOR
-    temp_dna = dna_xor_matrix(I5_dna, D1_dna)
-    I6_dna = dna_xor_matrix(temp_dna, D2_dna)
-    
-    # Step 7: Decode to image
-    I7 = np.zeros((M, N), dtype=np.uint8)
-    for i in range(M):
-        for j in range(N):
-            I7[i,j] = dna_decode_pixel(I6_dna[i,j], 0)  # Rule 0 (Rule 1)
-    
-    # Remove padding
-    encrypted = I7[:m, :n]
-    return encrypted
-
-# ====== FIXED DECRYPTION FUNCTION ======
-def decrypt_image(encrypted, keys):
-    # Pad encrypted image
-    m, n = encrypted.shape
-    m_pad = (2 - m % 2) % 2
-    n_pad = (2 - n % 2) % 2
-    I7 = np.pad(encrypted, ((0, m_pad), (0, n_pad)), 'reflect')
-    M, N = I7.shape
-    total_pixels = M * N
-    
-    # Reverse Step 7: Encode with fixed rule
-    I7_dna = np.empty((M, N), dtype='U4')
-    for i in range(M):
-        for j in range(N):
-            I7_dna[i,j] = dna_encode_pixel(I7[i,j], 0)  # Rule 0 (Rule 1)
-    
-    # Reverse Step 6: Double DNA-XOR
-    D1_dna = generate_dna_mask(M, N, keys.d1_x0, keys.d1_r)
-    D2_dna = generate_dna_mask(M, N, keys.d2_x0, keys.d2_r)
-    
-    temp_dna = dna_xor_matrix(I7_dna, D2_dna)
-    I6_dna = dna_xor_matrix(temp_dna, D1_dna)
-    
-    # FIX: Prepare for block unscrambling
-    char_list = []
-    for dna_str in I6_dna.flatten():
-        char_list.extend(list(dna_str))
-    
-    I5_int = np.vectorize({'A':0, 'T':1, 'C':2, 'G':3}.get)(np.array(char_list))
-    I5_int = I5_int.reshape(2*M, 2*N)
-    
-    # Reverse Step 5: Block unscrambling
-    blocks = [
-        I5_int[:M, :N],
-        I5_int[:M, N:],
-        I5_int[M:, :N],
-        I5_int[M:, N:]
-    ]
-    
-    # Same map assignment
-    singer_seq = singer_map(keys.singer_x0, keys.singer_mu, 4)
-    map_assign = (singer_seq * 4).astype(int) % 4
-    
-    chaotic_funcs = [
-        lambda x, p, l: quadratic_map(x, p, l),
-        lambda x, p, l: logistic_map(x, p, l),
-        lambda x, p, l: sine_map(x, p, l),
-        lambda x, p, l: pwl_map(x, p, l)
-    ]
-    
-    params = [
-        keys.quadratic_c,
-        keys.logistic_r,
-        keys.sine_a,
-        keys.pwl_p
-    ]
-    
-    inits = [
-        keys.quadratic_x0,
-        keys.logistic_x0,
-        keys.sine_x0,
-        keys.pwl_x0
-    ]
-    
-    unscrambled_blocks = []
-    for i in range(4):
-        func_idx = map_assign[i]
-        unscrambled = unscramble_block(
-            blocks[i],
-            chaotic_funcs[func_idx],
-            inits[func_idx],
-            params[func_idx]
-        )
-        unscrambled_blocks.append(unscrambled)
-    
-    # Reassemble
-    top = np.hstack([unscrambled_blocks[0], unscrambled_blocks[1]])
-    bottom = np.hstack([unscrambled_blocks[2], unscrambled_blocks[3]])
-    I4_int = np.vstack([top, bottom])
-    
-    # Reverse Step 4: Convert to DNA bases
-    base_list = []
-    for base_idx in I4_int.flatten():
-        base_list.append({0: 'A', 1: 'T', 2: 'C', 3: 'G'}[base_idx])
-    
-    # Group every 4 bases into DNA strings
-    dna_strings = []
-    for i in range(0, len(base_list), 4):
-        dna_strings.append(''.join(base_list[i:i+4]))
-    
-    I3_dna = np.array(dna_strings).reshape(M, N)
-    
-    # Reverse Step 3: Double DNA-XOR
-    temp_dna = dna_xor_matrix(I3_dna, D2_dna)
-    I2_dna = dna_xor_matrix(temp_dna, D1_dna)
-    
-    # Reverse Step 2: Dynamic DNA decoding
-    rule_seq = logistic_map(keys.rule_x0, keys.rule_r, total_pixels)
-    rule_indices = (rule_seq * 8).astype(int) % 8
-    
-    decrypted = np.zeros((M, N), dtype=np.uint8)
-    for i in range(M):
-        for j in range(N):
-            decrypted[i,j] = dna_decode_pixel(I2_dna[i,j], rule_indices[i*N + j])
-    
-    # Remove padding
-    return decrypted[:m, :n]
+    else:  # Decryption
+        # Pad channel
+        padded = np.pad(channel, ((0, m_pad), (0, n_pad)), 'reflect')
+        M, N = padded.shape
+        
+        # Reverse Step 7: Encode with fixed rule
+        I7_dna = np.empty((M, N), dtype='U4')
+        for i in range(M):
+            for j in range(N):
+                I7_dna[i,j] = dna_encode_pixel(padded[i,j], 0)  # Rule 0 (Rule 1)
+        
+        # Reverse Step 6: Double DNA-XOR
+        D1_dna = generate_dna_mask(M, N, keys.d1_x0, keys.d1_r)
+        D2_dna = generate_dna_mask(M, N, keys.d2_x0, keys.d2_r)
+        
+        temp_dna = dna_xor_matrix(I7_dna, D2_dna)
+        I6_dna = dna_xor_matrix(temp_dna, D1_dna)
+        
+        # Prepare for block unscrambling
+        char_list = []
+        for dna_str in I6_dna.flatten():
+            char_list.extend(list(dna_str))
+        
+        I5_int = np.vectorize({'A':0, 'T':1, 'C':2, 'G':3}.get)(np.array(char_list))
+        I5_int = I5_int.reshape(2*M, 2*N)
+        
+        # Reverse Step 5: Block unscrambling
+        blocks = [
+            I5_int[:M, :N],
+            I5_int[:M, N:],
+            I5_int[M:, :N],
+            I5_int[M:, N:]
+        ]
+        
+        # Same map assignment
+        singer_seq = singer_map(keys.singer_x0, keys.singer_mu, 4)
+        map_assign = (singer_seq * 4).astype(int) % 4
+        
+        chaotic_funcs = [
+            lambda x, p, l: quadratic_map(x, p, l),
+            lambda x, p, l: logistic_map(x, p, l),
+            lambda x, p, l: sine_map(x, p, l),
+            lambda x, p, l: pwl_map(x, p, l)
+        ]
+        
+        params = [
+            keys.quadratic_c,
+            keys.logistic_r,
+            keys.sine_a,
+            keys.pwl_p
+        ]
+        
+        inits = [
+            keys.quadratic_x0,
+            keys.logistic_x0,
+            keys.sine_x0,
+            keys.pwl_x0
+        ]
+        
+        unscrambled_blocks = []
+        for i in range(4):
+            func_idx = map_assign[i]
+            unscrambled = unscramble_block(
+                blocks[i],
+                chaotic_funcs[func_idx],
+                inits[func_idx],
+                params[func_idx]
+            )
+            unscrambled_blocks.append(unscrambled)
+        
+        # Reassemble
+        top = np.hstack([unscrambled_blocks[0], unscrambled_blocks[1]])
+        bottom = np.hstack([unscrambled_blocks[2], unscrambled_blocks[3]])
+        I4_int = np.vstack([top, bottom])
+        
+        # Reverse Step 4: Convert to DNA bases
+        base_list = []
+        for base_idx in I4_int.flatten():
+            base_list.append({0: 'A', 1: 'T', 2: 'C', 3: 'G'}[base_idx])
+        
+        # Group every 4 bases into DNA strings
+        dna_strings = []
+        for i in range(0, len(base_list), 4):
+            dna_strings.append(''.join(base_list[i:i+4]))
+        
+        I3_dna = np.array(dna_strings).reshape(M, N)
+        
+        # Reverse Step 3: Double DNA-XOR
+        temp_dna = dna_xor_matrix(I3_dna, D2_dna)
+        I2_dna = dna_xor_matrix(temp_dna, D1_dna)
+        
+        # Reverse Step 2: Dynamic DNA decoding
+        rule_seq = logistic_map(keys.rule_x0, keys.rule_r, M*N)
+        rule_indices = (rule_seq * 8).astype(int) % 8
+        
+        decrypted = np.zeros((M, N), dtype=np.uint8)
+        for i in range(M):
+            for j in range(N):
+                decrypted[i,j] = dna_decode_pixel(I2_dna[i,j], rule_indices[i*N + j])
+        
+        # Remove padding
+        return decrypted[:m, :n]
 
 # ----------------------------
-# CLI Interface
+# Main Function with Timing
 # ----------------------------
 def main(image_path):
-    # Initialize keys (in real use, save/load these)
+    # Start total timer
+    total_start = time.time()
+    
+    # Initialize keys
     keys = ChaosKeys()
     
-    # Encrypt
-    encrypted = encrypt_image(image_path, keys)
-    Image.fromarray(encrypted).save('encrypted.png')
+    # Load image
+    img = Image.open(image_path)
+    if img.mode != 'RGB':
+        img = img.convert('RGB')
     
-    # Decrypt
-    decrypted = decrypt_image(encrypted, keys)
-    Image.fromarray(decrypted).save('decrypted.png')
+    # Split into channels
+    r, g, b = img.split()
+    r_arr = np.array(r)
+    g_arr = np.array(g)
+    b_arr = np.array(b)
     
-    print("Encryption/decryption complete")
+    # Encrypt each channel
+    encrypt_start = time.time()
+    print("Encrypting red channel...")
+    r_enc = process_channel(r_arr, keys, encrypt=True)
+    print("Encrypting green channel...")
+    g_enc = process_channel(g_arr, keys, encrypt=True)
+    print("Encrypting blue channel...")
+    b_enc = process_channel(b_arr, keys, encrypt=True)
+    encrypt_time = time.time() - encrypt_start
+    
+    # Create encrypted image
+    r_img = Image.fromarray(r_enc)
+    g_img = Image.fromarray(g_enc)
+    b_img = Image.fromarray(b_enc)
+    encrypted_img = Image.merge('RGB', (r_img, g_img, b_img))
+    encrypted_img.save('encrypted.png')
+    
+    # Decrypt each channel
+    decrypt_start = time.time()
+    print("Decrypting red channel...")
+    r_dec = process_channel(r_enc, keys, encrypt=False)
+    print("Decrypting green channel...")
+    g_dec = process_channel(g_enc, keys, encrypt=False)
+    print("Decrypting blue channel...")
+    b_dec = process_channel(b_enc, keys, encrypt=False)
+    decrypt_time = time.time() - decrypt_start
+    
+    # Create decrypted image
+    r_dec_img = Image.fromarray(r_dec)
+    g_dec_img = Image.fromarray(g_dec)
+    b_dec_img = Image.fromarray(b_dec)
+    decrypted_img = Image.merge('RGB', (r_dec_img, g_dec_img, b_dec_img))
+    decrypted_img.save('decrypted.png')
+    
+    # Calculate total time
+    total_time = time.time() - total_start
+    
+    print("\nProcessing Complete!")
+    print(f"Encryption Time: {encrypt_time:.2f} seconds")
+    print(f"Decryption Time: {decrypt_time:.2f} seconds")
+    print(f"Total Time: {total_time:.2f} seconds")
     print(f"Encrypted: encrypted.png")
     print(f"Decrypted: decrypted.png")
 
