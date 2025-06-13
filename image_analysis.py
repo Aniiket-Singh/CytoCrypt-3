@@ -3,6 +3,7 @@ from PIL import Image
 import matplotlib.pyplot as plt
 from scipy.stats import pearsonr
 
+
 # === User-configurable paths ===
 # Enter the file paths for your images below
 original_path = 'images/lena.png'

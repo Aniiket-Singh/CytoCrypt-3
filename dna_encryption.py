@@ -5,7 +5,13 @@ import time
 import concurrent.futures
 from numba import jit
 import copy
-import threading  # Added for thread identification
+import threading
+import hashlib  # Added for checksums
+
+# ----------------------------
+# Configuration
+# ----------------------------
+DEBUG = False  # Set to False to disable debugging logs
 
 # ----------------------------
 # Diagnostic Logging
@@ -15,6 +21,29 @@ def log_with_timestamp(message):
     thread_id = threading.get_ident()
     timestamp = time.strftime("%H:%M:%S", time.localtime())
     print(f"[{timestamp}][Thread-{thread_id}] {message}")
+
+# ----------------------------
+# Debugging Utilities
+# ----------------------------
+def array_checksum(arr):
+    """Generate checksum for numpy array"""
+    return hashlib.md5(arr.tobytes()).hexdigest()
+
+def log_step(step_name, data, channel_name="", is_dna=False):
+    """Log processing step with checksum"""
+    if not DEBUG:
+        return ""
+    
+    if is_dna:
+        # Convert DNA matrix to string representation
+        data_str = ''.join(data.flatten())
+        checksum = hashlib.md5(data_str.encode()).hexdigest()
+        log_with_timestamp(f"[{step_name}][{channel_name}] DNA checksum: {checksum}")
+        return checksum
+    else:
+        checksum = array_checksum(data)
+        log_with_timestamp(f"[{step_name}][{channel_name}] Shape: {data.shape} Checksum: {checksum}")
+        return checksum
 
 # ----------------------------
 # Warm-up Numba functions
@@ -178,9 +207,22 @@ class ChaosKeys:
         # Enhanced diffusion parameters
         self.diff_x0 = 0.12345678
         self.diff_r = 3.999
+        
+    def checksum(self):
+        """Generate checksum for key parameters"""
+        if not DEBUG:
+            return ""
+        params = f"{self.rule_x0},{self.rule_r},{self.d1_x0},{self.d1_r},{self.d2_x0},{self.d2_r}," \
+                f"{self.singer_x0},{self.singer_mu},{self.quadratic_x0},{self.quadratic_c}," \
+                f"{self.logistic_x0},{self.logistic_r},{self.sine_x0},{self.sine_a},{self.pwl_x0},{self.pwl_p}," \
+                f"{self.diff_x0},{self.diff_r}"
+        return hashlib.md5(params.encode()).hexdigest()
 
+# ----------------------------
+# Corrected Mask Generation
+# ----------------------------
 def generate_dna_mask(height, width, x0, r):
-    """Generate DNA mask using logistic map"""
+    """Generate DNA mask using logistic map with consistent rule"""
     size = height * width * 4
     chaotic_seq = logistic_map(x0, r, size)
     int_mask = (chaotic_seq * 255).astype(np.uint8)
@@ -190,7 +232,7 @@ def generate_dna_mask(height, width, x0, r):
         for j in range(width):
             idx = (i * width + j) * 4
             bases = ''.join(
-                dna_encode_pixel(int_mask[idx + k], 0)
+                dna_encode_pixel(int_mask[idx + k], 0)  # Consistent rule 0
                 for k in range(4)
             )
             mask[i,j] = bases[:4]
@@ -210,9 +252,8 @@ def unscramble_block_numba(block, seq):
     return flat_block[inv_perm].reshape(block.shape)
 
 def enhanced_dna_xor(I2_dna, D1_dna, D2_dna):
+    """Simplified DNA-XOR without feedback for invertibility"""
     temp_dna = dna_xor_matrix(I2_dna, D1_dna)
-    feedback = np.roll(temp_dna, (1, 1), axis=(0, 1))
-    temp_dna = dna_xor_matrix(temp_dna, feedback)
     return dna_xor_matrix(temp_dna, D2_dna)
 
 def pixel_diffusion(matrix, keys):
@@ -242,13 +283,17 @@ def process_blocks(blocks, keys, encrypt=True):
         
         return [f.result() for f in futures]
 
-def process_channel(channel, keys, encrypt=True):
+def process_channel(channel, keys, encrypt=True, channel_name="Unknown"):
     m, n = channel.shape
     m_pad = (2 - m % 2) % 2
     n_pad = (2 - n % 2) % 2
     padded = np.pad(channel, ((0, m_pad), (0, n_pad)), 'reflect')
     M, N = padded.shape
     total_pixels = M * N
+    
+    if DEBUG:
+        log_step("START Channel", padded, channel_name)
+        log_with_timestamp(f"[KEYS][{channel_name}] Key checksum: {keys.checksum()}")
     
     if encrypt:
         # Step 2: Dynamic DNA encoding
@@ -260,15 +305,26 @@ def process_channel(channel, keys, encrypt=True):
             for j in range(N):
                 I2_dna[i,j] = dna_encode_pixel(padded[i,j], rule_indices[i*N + j])
         
+        if DEBUG:
+            log_step("Step2: DNA Encoding", I2_dna, channel_name, is_dna=True)
+        
         # Step 3: Enhanced DNA-XOR with avalanche effect
         D1_dna = generate_dna_mask(M, N, keys.d1_x0, keys.d1_r)
         D2_dna = generate_dna_mask(M, N, keys.d2_x0, keys.d2_r)
         I3_dna = enhanced_dna_xor(I2_dna, D1_dna, D2_dna)
         
+        if DEBUG:
+            log_step("Step3: DNA-XOR", I3_dna, channel_name, is_dna=True)
+            log_step("MASK D1", D1_dna, channel_name, is_dna=True)
+            log_step("MASK D2", D2_dna, channel_name, is_dna=True)
+        
         # Step 4: Convert to indices and reshape for blocks
         char_array = np.array([list(dna_str) for dna_str in I3_dna.flatten()])
         I4_int = np.vectorize({'A':0, 'T':1, 'C':2, 'G':3}.get)(char_array)
         I4_reshaped = I4_int.reshape(2*M, 2*N)
+        
+        if DEBUG:
+            log_step("Step4: DNA to Indices", I4_int, channel_name)
         
         # Step 5: Block scrambling (parallel)
         blocks = [
@@ -283,6 +339,9 @@ def process_channel(channel, keys, encrypt=True):
         top = np.hstack([scrambled_blocks[0], scrambled_blocks[1]])
         bottom = np.hstack([scrambled_blocks[2], scrambled_blocks[3]])
         I5_int = np.vstack([top, bottom])
+        
+        if DEBUG:
+            log_step("Step5: After Scrambling", I5_int, channel_name)
         
         # Step 6: Convert to DNA bases and repeat Step 3
         base_list = []
@@ -299,21 +358,28 @@ def process_channel(channel, keys, encrypt=True):
         # Repeat enhanced DNA-XOR
         temp_dna = enhanced_dna_xor(I5_dna, D1_dna, D2_dna)
         
+        if DEBUG:
+            log_step("Step6: After Second XOR", temp_dna, channel_name, is_dna=True)
+        
         # Step 7: Decode to image
         I7 = np.zeros((M, N), dtype=np.uint8)
         for i in range(M):
             for j in range(N):
-                I7[i,j] = dna_decode_pixel(temp_dna[i,j], 0)  # Rule 0 (Rule 1)
+                I7[i,j] = dna_decode_pixel(temp_dna[i,j], 0)
+        
+        if DEBUG:
+            log_step("Step7: After Decoding", I7, channel_name)
         
         # Remove padding
         result = I7[:m, :n]
         
-        # Add pixel-level diffusion
-        return pixel_diffusion(result, keys)
+        return result
     
     else:  # Decryption
         # Reverse pixel-level diffusion
         padded = pixel_diffusion(padded, keys)
+        if DEBUG:
+            log_step("Decrypt Step1: After Diffusion", padded, channel_name)
         
         # Reverse Step 7: Encode with fixed rule
         I7_dna = np.empty((M, N), dtype='U4')
@@ -321,12 +387,22 @@ def process_channel(channel, keys, encrypt=True):
             for j in range(N):
                 I7_dna[i,j] = dna_encode_pixel(padded[i,j], 0)  # Rule 0 (Rule 1)
         
+        if DEBUG:
+            log_step("Decrypt Step2: DNA Encoding", I7_dna, channel_name, is_dna=True)
+        
         # Reverse Step 6: Double DNA-XOR
         D1_dna = generate_dna_mask(M, N, keys.d1_x0, keys.d1_r)
         D2_dna = generate_dna_mask(M, N, keys.d2_x0, keys.d2_r)
         
+        if DEBUG:
+            log_step("Decrypt MASK D1", D1_dna, channel_name, is_dna=True)
+            log_step("Decrypt MASK D2", D2_dna, channel_name, is_dna=True)
+        
         temp_dna = dna_xor_matrix(I7_dna, D2_dna)
         I6_dna = dna_xor_matrix(temp_dna, D1_dna)
+        
+        if DEBUG:
+            log_step("Decrypt Step3: After DNA-XOR", I6_dna, channel_name, is_dna=True)
         
         # Prepare for block unscrambling
         char_list = []
@@ -335,6 +411,9 @@ def process_channel(channel, keys, encrypt=True):
         
         I5_int = np.vectorize({'A':0, 'T':1, 'C':2, 'G':3}.get)(np.array(char_list))
         I5_int = I5_int.reshape(2*M, 2*N)
+        
+        if DEBUG:
+            log_step("Decrypt Step4: DNA to Indices", I5_int, channel_name)
         
         # Reverse Step 5: Block unscrambling (parallel)
         blocks = [
@@ -350,6 +429,9 @@ def process_channel(channel, keys, encrypt=True):
         bottom = np.hstack([unscrambled_blocks[2], unscrambled_blocks[3]])
         I4_int = np.vstack([top, bottom])
         
+        if DEBUG:
+            log_step("Decrypt Step5: After Unscrambling", I4_int, channel_name)
+        
         # Reverse Step 4: Convert to DNA bases
         base_list = []
         for base_idx in I4_int.flatten():
@@ -362,9 +444,15 @@ def process_channel(channel, keys, encrypt=True):
         
         I3_dna = np.array(dna_strings).reshape(M, N)
         
+        if DEBUG:
+            log_step("Decrypt Step6: After Base Conversion", I3_dna, channel_name, is_dna=True)
+        
         # Reverse Step 3: Double DNA-XOR
         temp_dna = dna_xor_matrix(I3_dna, D2_dna)
         I2_dna = dna_xor_matrix(temp_dna, D1_dna)
+        
+        if DEBUG:
+            log_step("Decrypt Step7: After DNA-XOR", I2_dna, channel_name, is_dna=True)
         
         # Reverse Step 2: Dynamic DNA decoding
         rule_seq = logistic_map(keys.rule_x0, keys.rule_r, M*N)
@@ -375,15 +463,25 @@ def process_channel(channel, keys, encrypt=True):
             for j in range(N):
                 decrypted[i,j] = dna_decode_pixel(I2_dna[i,j], rule_indices[i*N + j])
         
+        if DEBUG:
+            log_step("Decrypt Step8: After Decoding", decrypted, channel_name)
+        
         # Remove padding
         decrypted = decrypted[:m, :n]
-        return pixel_diffusion(decrypted, keys)  # Diffusion LAST
+        result = pixel_diffusion(decrypted, keys)  # Diffusion LAST
+        
+        if DEBUG:
+            log_step("Decrypt Step9: After Diffusion", result, channel_name)
+        return result
 
 # ----------------------------
 # Fixed Multi-round Processing
 # ----------------------------
-def multi_round_process_channel(channel, keys, encrypt=True, rounds=2):
+def multi_round_process_channel(channel, keys, encrypt=True, rounds=2, channel_name="Unknown"):
     result = channel.copy()
+    
+    if DEBUG:
+        log_step("START Multi-round" if encrypt else "START Decrypt Multi-round", result, channel_name)
     
     # Create key modifications for each round
     round_keys = []
@@ -400,8 +498,21 @@ def multi_round_process_channel(channel, keys, encrypt=True, rounds=2):
     if not encrypt:
         round_keys.reverse()  # Reverse key order for decryption
     
-    for rk in round_keys:
-        result = process_channel(result, rk, encrypt)
+    for round_idx, rk in enumerate(round_keys):
+        if DEBUG:
+            log_with_timestamp(f"[{channel_name}] Round {round_idx+1}/{rounds} ({'encrypt' if encrypt else 'decrypt'})")
+            log_with_timestamp(f"[KEYS][{channel_name}] Round keys: {rk.checksum()}")
+        
+        result = process_channel(result, rk, encrypt, channel_name)
+
+        # ADD DIFFUSION STEP AFTER EACH ROUND
+        result = pixel_diffusion(result, rk)
+        
+        if DEBUG:
+            log_step(f"After Round {round_idx+1}", result, channel_name)
+    
+    if DEBUG:
+        log_step("END Multi-round" if encrypt else "END Decrypt Multi-round", result, channel_name)
     
     return result
 
@@ -413,7 +524,7 @@ def process_image_channel(channel, keys, encrypt=True, channel_name="Unknown"):
     start_time = time.time()
     log_with_timestamp(f"START processing {channel_name} channel ({'encrypt' if encrypt else 'decrypt'})")
     
-    result = multi_round_process_channel(channel, keys, encrypt)
+    result = multi_round_process_channel(channel, keys, encrypt, 1, channel_name)
     
     duration = time.time() - start_time
     log_with_timestamp(f"END processing {channel_name} channel ({'encrypt' if encrypt else 'decrypt'}) - took {duration:.2f}s")
@@ -433,6 +544,11 @@ def main(image_path):
     r, g, b = img.split()
     r_arr, g_arr, b_arr = np.array(r), np.array(g), np.array(b)
     
+    if DEBUG:
+        log_step("Original RED", r_arr, "RED")
+        log_step("Original GREEN", g_arr, "GREEN")
+        log_step("Original BLUE", b_arr, "BLUE")
+    
     # Encrypt
     encrypt_start = time.time()
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
@@ -448,6 +564,11 @@ def main(image_path):
         b_enc = future_b.result()
     
     encrypt_time = time.time() - encrypt_start
+    
+    if DEBUG:
+        log_step("Encrypted RED", r_enc, "RED")
+        log_step("Encrypted GREEN", g_enc, "GREEN")
+        log_step("Encrypted BLUE", b_enc, "BLUE")
     
     # Save encrypted
     Image.merge('RGB', (
@@ -471,6 +592,11 @@ def main(image_path):
         b_dec = future_b.result()
     
     decrypt_time = time.time() - decrypt_start
+    
+    if DEBUG:
+        log_step("Decrypted RED", r_dec, "RED")
+        log_step("Decrypted GREEN", g_dec, "GREEN")
+        log_step("Decrypted BLUE", b_dec, "BLUE")
     
     # Save decrypted
     Image.merge('RGB', (
