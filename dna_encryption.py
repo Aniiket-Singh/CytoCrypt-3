@@ -1,11 +1,35 @@
 import numpy as np
 from PIL import Image
 import sys
-import os
 import time
 import concurrent.futures
-from numba import jit, prange
+from numba import jit
 import copy
+import threading  # Added for thread identification
+
+# ----------------------------
+# Diagnostic Logging
+# ----------------------------
+def log_with_timestamp(message):
+    """Log messages with timestamp and thread ID"""
+    thread_id = threading.get_ident()
+    timestamp = time.strftime("%H:%M:%S", time.localtime())
+    print(f"[{timestamp}][Thread-{thread_id}] {message}")
+
+# ----------------------------
+# Warm-up Numba functions
+# ----------------------------
+def warmup_numba():
+    log_with_timestamp("Warming up Numba functions...")
+    small_arr = np.zeros(10, dtype=np.uint8)
+    logistic_map(0.1, 3.9, 10)
+    sine_map(0.1, 0.9, 10)
+    quadratic_map(0.1, 1.8, 10)
+    pwl_map(0.1, 0.3, 10)
+    singer_map(0.1, 1.07, 10)
+    scramble_block_numba(small_arr, np.random.rand(10))
+    unscramble_block_numba(small_arr, np.random.rand(10))
+    log_with_timestamp("Numba warm-up complete")
 
 # ----------------------------
 # Optimized Chaotic Maps
@@ -157,11 +181,10 @@ class ChaosKeys:
 
 def generate_dna_mask(height, width, x0, r):
     """Generate DNA mask using logistic map"""
-    size = height * width * 4  # 4 bases per pixel
+    size = height * width * 4
     chaotic_seq = logistic_map(x0, r, size)
     int_mask = (chaotic_seq * 255).astype(np.uint8)
     
-    # Convert to DNA bases using fixed rule (Rule 1)
     mask = np.empty((height, width), dtype='U4')
     for i in range(height):
         for j in range(width):
@@ -170,38 +193,29 @@ def generate_dna_mask(height, width, x0, r):
                 dna_encode_pixel(int_mask[idx + k], 0)
                 for k in range(4)
             )
-            mask[i,j] = bases[:4]  # Take first 4 bases
+            mask[i,j] = bases[:4]
     return mask
 
 @jit(nopython=True)
 def scramble_block_numba(block, seq):
-    """Numba-optimized block scrambling"""
     flat_block = block.flatten()
     perm_indices = np.argsort(seq)
     return flat_block[perm_indices].reshape(block.shape)
 
 @jit(nopython=True)
 def unscramble_block_numba(block, seq):
-    """Numba-optimized block unscrambling"""
     flat_block = block.flatten()
     perm_indices = np.argsort(seq)
     inv_perm = np.argsort(perm_indices)
     return flat_block[inv_perm].reshape(block.shape)
 
 def enhanced_dna_xor(I2_dna, D1_dna, D2_dna):
-    """Enhanced DNA-XOR with avalanche effect"""
-    # First XOR with D1
     temp_dna = dna_xor_matrix(I2_dna, D1_dna)
-    
-    # Add feedback mechanism for avalanche effect
     feedback = np.roll(temp_dna, (1, 1), axis=(0, 1))
     temp_dna = dna_xor_matrix(temp_dna, feedback)
-    
-    # Second XOR with D2
     return dna_xor_matrix(temp_dna, D2_dna)
 
 def pixel_diffusion(matrix, keys):
-    """Add pixel-level diffusion for enhanced security"""
     height, width = matrix.shape
     size = height * width
     diff_map = logistic_map(keys.diff_x0, keys.diff_r, size)
@@ -212,16 +226,12 @@ def pixel_diffusion(matrix, keys):
 # Parallel Processing Functions
 # ----------------------------
 def process_blocks(blocks, keys, encrypt=True):
-    """Process 4 blocks in parallel"""
-    # Precompute sequences for all blocks
     sequences = []
     for block in blocks:
         size = block.size
-        # Generate unique sequence for each block
         seq = singer_map(keys.singer_x0, keys.singer_mu, size)
         sequences.append(seq)
     
-    # Process blocks in parallel
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
         futures = []
         for i, block in enumerate(blocks):
@@ -233,10 +243,7 @@ def process_blocks(blocks, keys, encrypt=True):
         return [f.result() for f in futures]
 
 def process_channel(channel, keys, encrypt=True):
-    """Process a single image channel with enhanced diffusion"""
     m, n = channel.shape
-    
-    # Pad to even dimensions
     m_pad = (2 - m % 2) % 2
     n_pad = (2 - n % 2) % 2
     padded = np.pad(channel, ((0, m_pad), (0, n_pad)), 'reflect')
@@ -369,104 +376,118 @@ def process_channel(channel, keys, encrypt=True):
                 decrypted[i,j] = dna_decode_pixel(I2_dna[i,j], rule_indices[i*N + j])
         
         # Remove padding
-        return decrypted[:m, :n]
+        decrypted = decrypted[:m, :n]
+        return pixel_diffusion(decrypted, keys)  # Diffusion LAST
 
 # ----------------------------
-# Multi-round Processing
+# Fixed Multi-round Processing
 # ----------------------------
 def multi_round_process_channel(channel, keys, encrypt=True, rounds=2):
-    """Apply multiple rounds of encryption/decryption"""
     result = channel.copy()
+    
+    # Create key modifications for each round
+    round_keys = []
     for i in range(rounds):
-        # Create a slightly modified key for each round
-        round_keys = copy.deepcopy(keys)
+        rk = copy.deepcopy(keys)
         if i > 0:
-            # Modify parameters for additional rounds
-            round_keys.rule_x0 = (keys.rule_x0 + 0.01 * i) % 1.0
-            round_keys.d1_x0 = (keys.d1_x0 + 0.01 * i) % 1.0
-            round_keys.d2_x0 = (keys.d2_x0 + 0.01 * i) % 1.0
-            round_keys.singer_x0 = (keys.singer_x0 + 0.01 * i) % 1.0
-            round_keys.diff_x0 = (keys.diff_x0 + 0.01 * i) % 1.0
-        
-        result = process_channel(result, round_keys, encrypt)
+            rk.rule_x0 = (keys.rule_x0 + 0.01 * i) % 1.0
+            rk.d1_x0 = (keys.d1_x0 + 0.01 * i) % 1.0
+            rk.d2_x0 = (keys.d2_x0 + 0.01 * i) % 1.0
+            rk.singer_x0 = (keys.singer_x0 + 0.01 * i) % 1.0
+            rk.diff_x0 = (keys.diff_x0 + 0.01 * i) % 1.0
+        round_keys.append(rk)
+    
+    if not encrypt:
+        round_keys.reverse()  # Reverse key order for decryption
+    
+    for rk in round_keys:
+        result = process_channel(result, rk, encrypt)
+    
     return result
 
 # ----------------------------
-# Main Function with Parallelism
+# Channel Processing with Logging
 # ----------------------------
-def process_image_channel(channel, keys, encrypt=True):
-    """Process a single image channel with multi-round encryption"""
-    return multi_round_process_channel(channel, keys, encrypt)
-
-def main(image_path):
-    # Start total timer
-    total_start = time.time()
+def process_image_channel(channel, keys, encrypt=True, channel_name="Unknown"):
+    """Process a single channel with diagnostic logging"""
+    start_time = time.time()
+    log_with_timestamp(f"START processing {channel_name} channel ({'encrypt' if encrypt else 'decrypt'})")
     
-    # Initialize keys
+    result = multi_round_process_channel(channel, keys, encrypt)
+    
+    duration = time.time() - start_time
+    log_with_timestamp(f"END processing {channel_name} channel ({'encrypt' if encrypt else 'decrypt'}) - took {duration:.2f}s")
+    return result
+
+# ----------------------------
+# Main Function
+# ----------------------------
+def main(image_path):
+    total_start = time.time()
     keys = ChaosKeys()
     
-    # Load image
     img = Image.open(image_path)
     if img.mode != 'RGB':
         img = img.convert('RGB')
     
-    # Split into channels
     r, g, b = img.split()
-    r_arr = np.array(r)
-    g_arr = np.array(g)
-    b_arr = np.array(b)
+    r_arr, g_arr, b_arr = np.array(r), np.array(g), np.array(b)
     
-    # Encrypt channels in parallel
+    # Encrypt
     encrypt_start = time.time()
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-        future_r = executor.submit(process_image_channel, r_arr, keys, True)
-        future_g = executor.submit(process_image_channel, g_arr, keys, True)
-        future_b = executor.submit(process_image_channel, b_arr, keys, True)
+        log_with_timestamp("Submitting channel encryption tasks")
         
+        future_r = executor.submit(process_image_channel, r_arr, keys, True, "RED")
+        future_g = executor.submit(process_image_channel, g_arr, keys, True, "GREEN")
+        future_b = executor.submit(process_image_channel, b_arr, keys, True, "BLUE")
+        
+        log_with_timestamp("Waiting for encryption results")
         r_enc = future_r.result()
         g_enc = future_g.result()
         b_enc = future_b.result()
+    
     encrypt_time = time.time() - encrypt_start
     
-    # Create encrypted image
-    r_img = Image.fromarray(r_enc)
-    g_img = Image.fromarray(g_enc)
-    b_img = Image.fromarray(b_enc)
-    encrypted_img = Image.merge('RGB', (r_img, g_img, b_img))
-    encrypted_img.save('encrypted.png')
+    # Save encrypted
+    Image.merge('RGB', (
+        Image.fromarray(r_enc),
+        Image.fromarray(g_enc),
+        Image.fromarray(b_enc)
+    )).save('encrypted.png')
     
-    # Decrypt channels in parallel
+    # Decrypt
     decrypt_start = time.time()
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-        future_r = executor.submit(process_image_channel, r_enc, keys, False)
-        future_g = executor.submit(process_image_channel, g_enc, keys, False)
-        future_b = executor.submit(process_image_channel, b_enc, keys, False)
+        log_with_timestamp("Submitting channel decryption tasks")
         
+        future_r = executor.submit(process_image_channel, r_enc, keys, False, "RED")
+        future_g = executor.submit(process_image_channel, g_enc, keys, False, "GREEN")
+        future_b = executor.submit(process_image_channel, b_enc, keys, False, "BLUE")
+        
+        log_with_timestamp("Waiting for decryption results")
         r_dec = future_r.result()
         g_dec = future_g.result()
         b_dec = future_b.result()
+    
     decrypt_time = time.time() - decrypt_start
     
-    # Create decrypted image
-    r_dec_img = Image.fromarray(r_dec)
-    g_dec_img = Image.fromarray(g_dec)
-    b_dec_img = Image.fromarray(b_dec)
-    decrypted_img = Image.merge('RGB', (r_dec_img, g_dec_img, b_dec_img))
-    decrypted_img.save('decrypted.png')
+    # Save decrypted
+    Image.merge('RGB', (
+        Image.fromarray(r_dec),
+        Image.fromarray(g_dec),
+        Image.fromarray(b_dec)
+    )).save('decrypted.png')
     
-    # Calculate total time
     total_time = time.time() - total_start
-    
-    print("\nProcessing Complete!")
-    print(f"Encryption Time: {encrypt_time:.2f} seconds")
-    print(f"Decryption Time: {decrypt_time:.2f} seconds")
-    print(f"Total Time: {total_time:.2f} seconds")
-    print(f"Encrypted: encrypted.png")
-    print(f"Decrypted: decrypted.png")
+    log_with_timestamp(f"\nProcessing Complete!\n"
+          f"Encryption: {encrypt_time:.2f}s\n"
+          f"Decryption: {decrypt_time:.2f}s\n"
+          f"Total: {total_time:.2f}s")
 
 if __name__ == "__main__":
+    warmup_numba()  # Pre-compile Numba functions
     if len(sys.argv) != 2:
         print("Usage: python dna_encryption.py <image_path>")
         sys.exit(1)
-    
     main(sys.argv[1])
