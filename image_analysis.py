@@ -8,7 +8,7 @@ from scipy.stats import pearsonr
 original_path = 'images/lena.png'
 encrypted_path = 'encrypted.png'
 decrypted_path = ''  # Set to None if not using
-output_hist_path = 'results/lena_histogram.png'         # Set to None to display instead of saving
+output_hist_path = 'results/lena_histogram_decryption_not_working_after_optimizations.png'         # Set to None to display instead of saving
 
 # === Utility functions ===
 def load_image(path, mode='RGB'):

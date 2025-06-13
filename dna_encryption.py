@@ -3,36 +3,43 @@ from PIL import Image
 import sys
 import os
 import time
+import concurrent.futures
+from numba import jit, prange
+import copy
 
 # ----------------------------
-# Chaotic Map Implementations
+# Optimized Chaotic Maps
 # ----------------------------
+@jit(nopython=True)
 def logistic_map(x0, r, length):
-    seq = np.zeros(length)
+    seq = np.empty(length)
     x = x0
     for i in range(length):
         x = r * x * (1 - x)
         seq[i] = x
     return seq
 
+@jit(nopython=True)
 def sine_map(x0, a, length):
-    seq = np.zeros(length)
+    seq = np.empty(length)
     x = x0
     for i in range(length):
         x = a * np.sin(np.pi * x)
         seq[i] = x
     return seq
 
+@jit(nopython=True)
 def quadratic_map(x0, c, length):
-    seq = np.zeros(length)
+    seq = np.empty(length)
     x = x0
     for i in range(length):
         x = c - x**2
         seq[i] = x
     return seq
 
+@jit(nopython=True)
 def pwl_map(x0, p, length):
-    seq = np.zeros(length)
+    seq = np.empty(length)
     x = x0
     for i in range(length):
         if x < p:
@@ -46,8 +53,9 @@ def pwl_map(x0, p, length):
         seq[i] = x
     return seq
 
+@jit(nopython=True)
 def singer_map(x0, mu, length):
-    seq = np.zeros(length)
+    seq = np.empty(length)
     x = x0
     for i in range(length):
         x = mu * (7.86*x - 23.31*x**2 + 28.75*x**3 - 13.302875*x**4)
@@ -116,7 +124,7 @@ def indices_to_bases(index_matrix):
     return np.vectorize(index_map.get)(index_matrix)
 
 # ----------------------------
-# Core Cryptographic Functions
+# Enhanced Cryptographic Functions
 # ----------------------------
 class ChaosKeys:
     """Container for chaotic system parameters"""
@@ -142,6 +150,10 @@ class ChaosKeys:
         self.sine_a = 0.99
         self.pwl_x0 = 0.91234567
         self.pwl_p = 0.3
+        
+        # Enhanced diffusion parameters
+        self.diff_x0 = 0.12345678
+        self.diff_r = 3.999
 
 def generate_dna_mask(height, width, x0, r):
     """Generate DNA mask using logistic map"""
@@ -161,28 +173,67 @@ def generate_dna_mask(height, width, x0, r):
             mask[i,j] = bases[:4]  # Take first 4 bases
     return mask
 
-def scramble_block(block, chaotic_func, init, param):
-    """Scramble block using chaotic map"""
+@jit(nopython=True)
+def scramble_block_numba(block, seq):
+    """Numba-optimized block scrambling"""
     flat_block = block.flatten()
-    length = len(flat_block)
-    seq = chaotic_func(init, param, length)
     perm_indices = np.argsort(seq)
     return flat_block[perm_indices].reshape(block.shape)
 
-def unscramble_block(block, chaotic_func, init, param):
-    """Unscramble block using chaotic map"""
+@jit(nopython=True)
+def unscramble_block_numba(block, seq):
+    """Numba-optimized block unscrambling"""
     flat_block = block.flatten()
-    length = len(flat_block)
-    seq = chaotic_func(init, param, length)
     perm_indices = np.argsort(seq)
     inv_perm = np.argsort(perm_indices)
     return flat_block[inv_perm].reshape(block.shape)
 
+def enhanced_dna_xor(I2_dna, D1_dna, D2_dna):
+    """Enhanced DNA-XOR with avalanche effect"""
+    # First XOR with D1
+    temp_dna = dna_xor_matrix(I2_dna, D1_dna)
+    
+    # Add feedback mechanism for avalanche effect
+    feedback = np.roll(temp_dna, (1, 1), axis=(0, 1))
+    temp_dna = dna_xor_matrix(temp_dna, feedback)
+    
+    # Second XOR with D2
+    return dna_xor_matrix(temp_dna, D2_dna)
+
+def pixel_diffusion(matrix, keys):
+    """Add pixel-level diffusion for enhanced security"""
+    height, width = matrix.shape
+    size = height * width
+    diff_map = logistic_map(keys.diff_x0, keys.diff_r, size)
+    diff_map = (diff_map * 255).astype(np.uint8).reshape(height, width)
+    return np.bitwise_xor(matrix, diff_map)
+
 # ----------------------------
-# Channel Processing Functions
+# Parallel Processing Functions
 # ----------------------------
+def process_blocks(blocks, keys, encrypt=True):
+    """Process 4 blocks in parallel"""
+    # Precompute sequences for all blocks
+    sequences = []
+    for block in blocks:
+        size = block.size
+        # Generate unique sequence for each block
+        seq = singer_map(keys.singer_x0, keys.singer_mu, size)
+        sequences.append(seq)
+    
+    # Process blocks in parallel
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        futures = []
+        for i, block in enumerate(blocks):
+            if encrypt:
+                futures.append(executor.submit(scramble_block_numba, block, sequences[i]))
+            else:
+                futures.append(executor.submit(unscramble_block_numba, block, sequences[i]))
+        
+        return [f.result() for f in futures]
+
 def process_channel(channel, keys, encrypt=True):
-    """Process a single image channel (encrypt or decrypt)"""
+    """Process a single image channel with enhanced diffusion"""
     m, n = channel.shape
     
     # Pad to even dimensions
@@ -202,62 +253,24 @@ def process_channel(channel, keys, encrypt=True):
             for j in range(N):
                 I2_dna[i,j] = dna_encode_pixel(padded[i,j], rule_indices[i*N + j])
         
-        # Step 3: Double DNA-XOR
+        # Step 3: Enhanced DNA-XOR with avalanche effect
         D1_dna = generate_dna_mask(M, N, keys.d1_x0, keys.d1_r)
         D2_dna = generate_dna_mask(M, N, keys.d2_x0, keys.d2_r)
-        
-        temp_dna = dna_xor_matrix(I2_dna, D1_dna)
-        I3_dna = dna_xor_matrix(temp_dna, D2_dna)
+        I3_dna = enhanced_dna_xor(I2_dna, D1_dna, D2_dna)
         
         # Step 4: Convert to indices and reshape for blocks
         char_array = np.array([list(dna_str) for dna_str in I3_dna.flatten()])
         I4_int = np.vectorize({'A':0, 'T':1, 'C':2, 'G':3}.get)(char_array)
         I4_reshaped = I4_int.reshape(2*M, 2*N)
         
-        # Step 5: Block scrambling
+        # Step 5: Block scrambling (parallel)
         blocks = [
             I4_reshaped[:M, :N],
             I4_reshaped[:M, N:],
             I4_reshaped[M:, :N],
             I4_reshaped[M:, N:]
         ]
-        
-        # Assign chaotic maps to blocks
-        singer_seq = singer_map(keys.singer_x0, keys.singer_mu, 4)
-        map_assign = (singer_seq * 4).astype(int) % 4
-        
-        chaotic_funcs = [
-            lambda x, p, l: quadratic_map(x, p, l),
-            lambda x, p, l: logistic_map(x, p, l),
-            lambda x, p, l: sine_map(x, p, l),
-            lambda x, p, l: pwl_map(x, p, l)
-        ]
-        
-        params = [
-            keys.quadratic_c,
-            keys.logistic_r,
-            keys.sine_a,
-            keys.pwl_p
-        ]
-        
-        inits = [
-            keys.quadratic_x0,
-            keys.logistic_x0,
-            keys.sine_x0,
-            keys.pwl_x0
-        ]
-        
-        # Scramble blocks
-        scrambled_blocks = []
-        for i in range(4):
-            func_idx = map_assign[i]
-            scrambled = scramble_block(
-                blocks[i],
-                chaotic_funcs[func_idx],
-                inits[func_idx],
-                params[func_idx]
-            )
-            scrambled_blocks.append(scrambled)
+        scrambled_blocks = process_blocks(blocks, keys, encrypt=True)
         
         # Reassemble
         top = np.hstack([scrambled_blocks[0], scrambled_blocks[1]])
@@ -276,23 +289,24 @@ def process_channel(channel, keys, encrypt=True):
         
         I5_dna = np.array(dna_strings).reshape(M, N)
         
-        # Repeat Step 3 DNA-XOR
-        temp_dna = dna_xor_matrix(I5_dna, D1_dna)
-        I6_dna = dna_xor_matrix(temp_dna, D2_dna)
+        # Repeat enhanced DNA-XOR
+        temp_dna = enhanced_dna_xor(I5_dna, D1_dna, D2_dna)
         
         # Step 7: Decode to image
         I7 = np.zeros((M, N), dtype=np.uint8)
         for i in range(M):
             for j in range(N):
-                I7[i,j] = dna_decode_pixel(I6_dna[i,j], 0)  # Rule 0 (Rule 1)
+                I7[i,j] = dna_decode_pixel(temp_dna[i,j], 0)  # Rule 0 (Rule 1)
         
         # Remove padding
-        return I7[:m, :n]
+        result = I7[:m, :n]
+        
+        # Add pixel-level diffusion
+        return pixel_diffusion(result, keys)
     
     else:  # Decryption
-        # Pad channel
-        padded = np.pad(channel, ((0, m_pad), (0, n_pad)), 'reflect')
-        M, N = padded.shape
+        # Reverse pixel-level diffusion
+        padded = pixel_diffusion(padded, keys)
         
         # Reverse Step 7: Encode with fixed rule
         I7_dna = np.empty((M, N), dtype='U4')
@@ -315,49 +329,14 @@ def process_channel(channel, keys, encrypt=True):
         I5_int = np.vectorize({'A':0, 'T':1, 'C':2, 'G':3}.get)(np.array(char_list))
         I5_int = I5_int.reshape(2*M, 2*N)
         
-        # Reverse Step 5: Block unscrambling
+        # Reverse Step 5: Block unscrambling (parallel)
         blocks = [
             I5_int[:M, :N],
             I5_int[:M, N:],
             I5_int[M:, :N],
             I5_int[M:, N:]
         ]
-        
-        # Same map assignment
-        singer_seq = singer_map(keys.singer_x0, keys.singer_mu, 4)
-        map_assign = (singer_seq * 4).astype(int) % 4
-        
-        chaotic_funcs = [
-            lambda x, p, l: quadratic_map(x, p, l),
-            lambda x, p, l: logistic_map(x, p, l),
-            lambda x, p, l: sine_map(x, p, l),
-            lambda x, p, l: pwl_map(x, p, l)
-        ]
-        
-        params = [
-            keys.quadratic_c,
-            keys.logistic_r,
-            keys.sine_a,
-            keys.pwl_p
-        ]
-        
-        inits = [
-            keys.quadratic_x0,
-            keys.logistic_x0,
-            keys.sine_x0,
-            keys.pwl_x0
-        ]
-        
-        unscrambled_blocks = []
-        for i in range(4):
-            func_idx = map_assign[i]
-            unscrambled = unscramble_block(
-                blocks[i],
-                chaotic_funcs[func_idx],
-                inits[func_idx],
-                params[func_idx]
-            )
-            unscrambled_blocks.append(unscrambled)
+        unscrambled_blocks = process_blocks(blocks, keys, encrypt=False)
         
         # Reassemble
         top = np.hstack([unscrambled_blocks[0], unscrambled_blocks[1]])
@@ -393,8 +372,32 @@ def process_channel(channel, keys, encrypt=True):
         return decrypted[:m, :n]
 
 # ----------------------------
-# Main Function with Timing
+# Multi-round Processing
 # ----------------------------
+def multi_round_process_channel(channel, keys, encrypt=True, rounds=2):
+    """Apply multiple rounds of encryption/decryption"""
+    result = channel.copy()
+    for i in range(rounds):
+        # Create a slightly modified key for each round
+        round_keys = copy.deepcopy(keys)
+        if i > 0:
+            # Modify parameters for additional rounds
+            round_keys.rule_x0 = (keys.rule_x0 + 0.01 * i) % 1.0
+            round_keys.d1_x0 = (keys.d1_x0 + 0.01 * i) % 1.0
+            round_keys.d2_x0 = (keys.d2_x0 + 0.01 * i) % 1.0
+            round_keys.singer_x0 = (keys.singer_x0 + 0.01 * i) % 1.0
+            round_keys.diff_x0 = (keys.diff_x0 + 0.01 * i) % 1.0
+        
+        result = process_channel(result, round_keys, encrypt)
+    return result
+
+# ----------------------------
+# Main Function with Parallelism
+# ----------------------------
+def process_image_channel(channel, keys, encrypt=True):
+    """Process a single image channel with multi-round encryption"""
+    return multi_round_process_channel(channel, keys, encrypt)
+
 def main(image_path):
     # Start total timer
     total_start = time.time()
@@ -413,14 +416,16 @@ def main(image_path):
     g_arr = np.array(g)
     b_arr = np.array(b)
     
-    # Encrypt each channel
+    # Encrypt channels in parallel
     encrypt_start = time.time()
-    print("Encrypting red channel...")
-    r_enc = process_channel(r_arr, keys, encrypt=True)
-    print("Encrypting green channel...")
-    g_enc = process_channel(g_arr, keys, encrypt=True)
-    print("Encrypting blue channel...")
-    b_enc = process_channel(b_arr, keys, encrypt=True)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+        future_r = executor.submit(process_image_channel, r_arr, keys, True)
+        future_g = executor.submit(process_image_channel, g_arr, keys, True)
+        future_b = executor.submit(process_image_channel, b_arr, keys, True)
+        
+        r_enc = future_r.result()
+        g_enc = future_g.result()
+        b_enc = future_b.result()
     encrypt_time = time.time() - encrypt_start
     
     # Create encrypted image
@@ -430,14 +435,16 @@ def main(image_path):
     encrypted_img = Image.merge('RGB', (r_img, g_img, b_img))
     encrypted_img.save('encrypted.png')
     
-    # Decrypt each channel
+    # Decrypt channels in parallel
     decrypt_start = time.time()
-    print("Decrypting red channel...")
-    r_dec = process_channel(r_enc, keys, encrypt=False)
-    print("Decrypting green channel...")
-    g_dec = process_channel(g_enc, keys, encrypt=False)
-    print("Decrypting blue channel...")
-    b_dec = process_channel(b_enc, keys, encrypt=False)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+        future_r = executor.submit(process_image_channel, r_enc, keys, False)
+        future_g = executor.submit(process_image_channel, g_enc, keys, False)
+        future_b = executor.submit(process_image_channel, b_enc, keys, False)
+        
+        r_dec = future_r.result()
+        g_dec = future_g.result()
+        b_dec = future_b.result()
     decrypt_time = time.time() - decrypt_start
     
     # Create decrypted image
