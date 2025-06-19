@@ -6,12 +6,12 @@ import concurrent.futures
 from numba import jit
 import copy
 import threading
-import hashlib  # Added for checksums
+import hashlib
 
 # ----------------------------
 # Configuration
 # ----------------------------
-DEBUG = False  # Set to False to disable debugging logs
+DEBUG = True  # Set to False to disable debugging logs
 
 # ----------------------------
 # Diagnostic Logging
@@ -46,6 +46,31 @@ def log_step(step_name, data, channel_name="", is_dna=False):
         return checksum
 
 # ----------------------------
+# 2D Chaotic Map for Diffusion
+# ----------------------------
+@jit(nopython=True)
+def generate_2d_chaotic_matrix(height, width, x0, y0, a, b):
+    """Generate a 2D chaotic matrix using coupled logistic maps"""
+    matrix = np.zeros((height, width))
+    x = x0
+    y = y0
+    
+    for i in range(height):
+        for j in range(width):
+            # Coupled logistic maps for better 2D diffusion
+            x_next = a * x * (1 - x) + b * y * y
+            y_next = a * y * (1 - y) + b * x * x
+            
+            # Ensure values stay in [0,1] range
+            x = x_next % 1.0
+            y = y_next % 1.0
+            
+            # Scale to 0-255 and store
+            matrix[i, j] = (x * 255) % 256
+    
+    return matrix
+
+# ----------------------------
 # Warm-up Numba functions
 # ----------------------------
 def warmup_numba():
@@ -58,6 +83,10 @@ def warmup_numba():
     singer_map(0.1, 1.07, 10)
     scramble_block_numba(small_arr, np.random.rand(10))
     unscramble_block_numba(small_arr, np.random.rand(10))
+    
+    # Warm up 2D chaotic map
+    generate_2d_chaotic_matrix(10, 10, 0.1, 0.2, 3.7, 0.3)
+    
     log_with_timestamp("Numba warm-up complete")
 
 # ----------------------------
@@ -208,6 +237,12 @@ class ChaosKeys:
         self.diff_x0 = 0.12345678
         self.diff_r = 3.999
         
+        # 2D chaotic diffusion parameters
+        self.diff2d_x0 = 0.11223344
+        self.diff2d_y0 = 0.22334455
+        self.diff2d_a = 3.7  # Primary chaotic parameter
+        self.diff2d_b = 0.2  # Coupling parameter
+        
     def checksum(self):
         """Generate checksum for key parameters"""
         if not DEBUG:
@@ -215,14 +250,12 @@ class ChaosKeys:
         params = f"{self.rule_x0},{self.rule_r},{self.d1_x0},{self.d1_r},{self.d2_x0},{self.d2_r}," \
                 f"{self.singer_x0},{self.singer_mu},{self.quadratic_x0},{self.quadratic_c}," \
                 f"{self.logistic_x0},{self.logistic_r},{self.sine_x0},{self.sine_a},{self.pwl_x0},{self.pwl_p}," \
-                f"{self.diff_x0},{self.diff_r}"
+                f"{self.diff_x0},{self.diff_r}," \
+                f"{self.diff2d_x0},{self.diff2d_y0},{self.diff2d_a},{self.diff2d_b}"
         return hashlib.md5(params.encode()).hexdigest()
 
-# ----------------------------
-# Corrected Mask Generation
-# ----------------------------
 def generate_dna_mask(height, width, x0, r):
-    """Generate DNA mask using logistic map with consistent rule"""
+    """Generate DNA mask using logistic map"""
     size = height * width * 4
     chaotic_seq = logistic_map(x0, r, size)
     int_mask = (chaotic_seq * 255).astype(np.uint8)
@@ -232,7 +265,7 @@ def generate_dna_mask(height, width, x0, r):
         for j in range(width):
             idx = (i * width + j) * 4
             bases = ''.join(
-                dna_encode_pixel(int_mask[idx + k], 0)  # Consistent rule 0
+                dna_encode_pixel(int_mask[idx + k], 0)
                 for k in range(4)
             )
             mask[i,j] = bases[:4]
@@ -252,7 +285,6 @@ def unscramble_block_numba(block, seq):
     return flat_block[inv_perm].reshape(block.shape)
 
 def enhanced_dna_xor(I2_dna, D1_dna, D2_dna):
-    """Simplified DNA-XOR without feedback for invertibility"""
     temp_dna = dna_xor_matrix(I2_dna, D1_dna)
     return dna_xor_matrix(temp_dna, D2_dna)
 
@@ -261,6 +293,17 @@ def pixel_diffusion(matrix, keys):
     size = height * width
     diff_map = logistic_map(keys.diff_x0, keys.diff_r, size)
     diff_map = (diff_map * 255).astype(np.uint8).reshape(height, width)
+    return np.bitwise_xor(matrix, diff_map)
+
+def final_2d_diffusion(matrix, keys):
+    """Apply 2D chaotic diffusion as the final encryption step"""
+    height, width = matrix.shape
+    diff_map = generate_2d_chaotic_matrix(
+        height, width, 
+        keys.diff2d_x0, keys.diff2d_y0,
+        keys.diff2d_a, keys.diff2d_b
+    ).astype(np.uint8)
+    
     return np.bitwise_xor(matrix, diff_map)
 
 # ----------------------------
@@ -365,7 +408,7 @@ def process_channel(channel, keys, encrypt=True, channel_name="Unknown"):
         I7 = np.zeros((M, N), dtype=np.uint8)
         for i in range(M):
             for j in range(N):
-                I7[i,j] = dna_decode_pixel(temp_dna[i,j], 0)
+                I7[i,j] = dna_decode_pixel(temp_dna[i,j], 0)  # Rule 0 (Rule 1)
         
         if DEBUG:
             log_step("Step7: After Decoding", I7, channel_name)
@@ -373,7 +416,11 @@ def process_channel(channel, keys, encrypt=True, channel_name="Unknown"):
         # Remove padding
         result = I7[:m, :n]
         
-        return result
+        # Add pixel-level diffusion
+        diffused = pixel_diffusion(result, keys)
+        if DEBUG:
+            log_step("Step8: After Diffusion", diffused, channel_name)
+        return diffused
     
     else:  # Decryption
         # Reverse pixel-level diffusion
@@ -475,7 +522,7 @@ def process_channel(channel, keys, encrypt=True, channel_name="Unknown"):
         return result
 
 # ----------------------------
-# Fixed Multi-round Processing
+# Modified Multi-round Processing (remove final diffusion)
 # ----------------------------
 def multi_round_process_channel(channel, keys, encrypt=True, rounds=2, channel_name="Unknown"):
     result = channel.copy()
@@ -493,6 +540,8 @@ def multi_round_process_channel(channel, keys, encrypt=True, rounds=2, channel_n
             rk.d2_x0 = (keys.d2_x0 + 0.01 * i) % 1.0
             rk.singer_x0 = (keys.singer_x0 + 0.01 * i) % 1.0
             rk.diff_x0 = (keys.diff_x0 + 0.01 * i) % 1.0
+            rk.diff2d_x0 = (keys.diff2d_x0 + 0.01 * i) % 1.0
+            rk.diff2d_y0 = (keys.diff2d_y0 + 0.01 * i) % 1.0
         round_keys.append(rk)
     
     if not encrypt:
@@ -504,31 +553,38 @@ def multi_round_process_channel(channel, keys, encrypt=True, rounds=2, channel_n
             log_with_timestamp(f"[KEYS][{channel_name}] Round keys: {rk.checksum()}")
         
         result = process_channel(result, rk, encrypt, channel_name)
-
-        # ADD DIFFUSION STEP AFTER EACH ROUND
-        result = pixel_diffusion(result, rk)
         
         if DEBUG:
             log_step(f"After Round {round_idx+1}", result, channel_name)
     
+    # REMOVED: Final diffusion from multi-round
     if DEBUG:
         log_step("END Multi-round" if encrypt else "END Decrypt Multi-round", result, channel_name)
     
     return result
 
 # ----------------------------
-# Channel Processing with Logging
+# Modified Channel Processing
 # ----------------------------
 def process_image_channel(channel, keys, encrypt=True, channel_name="Unknown"):
-    """Process a single channel with diagnostic logging"""
+    """Process a single channel with symmetric diffusion"""
     start_time = time.time()
     log_with_timestamp(f"START processing {channel_name} channel ({'encrypt' if encrypt else 'decrypt'})")
     
-    result = multi_round_process_channel(channel, keys, encrypt, 1, channel_name)
-    
-    duration = time.time() - start_time
-    log_with_timestamp(f"END processing {channel_name} channel ({'encrypt' if encrypt else 'decrypt'}) - took {duration:.2f}s")
-    return result
+    if encrypt:
+        # Encryption: Rounds → Final 2D Diffusion
+        result = multi_round_process_channel(channel, keys, True, 2, channel_name)
+        diffused = final_2d_diffusion(result, keys)  # Use original keys
+        if DEBUG:
+            log_step("Final 2D Diffusion", diffused, channel_name)
+        return diffused
+    else:
+        # Decryption: Initial 2D Diffusion → Rounds
+        diffused = final_2d_diffusion(channel, keys)  # Use original keys
+        if DEBUG:
+            log_step("Decrypt Initial 2D Diffusion", diffused, channel_name)
+        result = multi_round_process_channel(diffused, keys, False, 2, channel_name)
+        return result
 
 # ----------------------------
 # Main Function

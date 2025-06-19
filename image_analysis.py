@@ -2,14 +2,18 @@ import numpy as np
 from PIL import Image
 import matplotlib.pyplot as plt
 from scipy.stats import pearsonr
-
+import os
 
 # === User-configurable paths ===
 # Enter the file paths for your images below
-original_path = 'images/lena.png'
-encrypted_path = 'encrypted.png'
+original_path = 'images/lena_grayscale.png'
+encrypted_path = 'composite-implement_encrypted_enhanced.png'
 decrypted_path = ''  # Set to None if not using
-output_hist_path = 'results/lena_histogram_decryption_not_working_after_optimizations.png'         # Set to None to display instead of saving
+output_hist_path = 'results/lena_composite_implemented.png'         # Set to None to display instead of saving
+
+# Create results directory if it doesn't exist
+if output_hist_path and not os.path.exists(os.path.dirname(output_hist_path)):
+    os.makedirs(os.path.dirname(output_hist_path))
 
 # === Utility functions ===
 def load_image(path, mode='RGB'):
@@ -17,59 +21,46 @@ def load_image(path, mode='RGB'):
     img = Image.open(path).convert(mode)
     return np.array(img)
 
-def rgb_to_grayscale(rgb_array):
-    """Convert RGB array to grayscale using standard weights"""
-    return np.dot(rgb_array[..., :3], [0.2989, 0.5870, 0.1140]).astype(np.uint8)
+def is_grayscale(img_array):
+    """Check if an image is grayscale (single channel or all channels identical)"""
+    if len(img_array.shape) == 2:
+        return True  # Single channel image
+    
+    if len(img_array.shape) == 3:
+        # Check if all channels are identical
+        if np.all(img_array[:, :, 0] == img_array[:, :, 1]) and \
+           np.all(img_array[:, :, 0] == img_array[:, :, 2]):
+            return True
+    
+    return False
 
 # === Histogram Functions ===
 def plot_histograms(orig, enc, save_path=None):
-    """Plot histograms with proper handling for color images"""
-    fig = plt.figure(figsize=(15, 10))
+    """Plot histograms only if both images are grayscale"""
+    if not is_grayscale(orig) or not is_grayscale(enc):
+        print("Skipping histogram: One or both images are not grayscale")
+        return
     
-    # Handle grayscale images
-    if len(orig.shape) == 2:
-        # Original image histogram
-        plt.subplot(2, 2, 1)
-        plt.title('Original Image Histogram')
-        plt.hist(orig.flatten(), bins=256, range=(0, 255), density=True)
-        plt.xlabel('Pixel value')
-        plt.ylabel('Frequency')
-        
-        # Encrypted image histogram
-        plt.subplot(2, 2, 2)
-        plt.title('Encrypted Image Histogram')
-        plt.hist(enc.flatten(), bins=256, range=(0, 255), density=True)
-        plt.xlabel('Pixel value')
+    # Convert to grayscale arrays if needed
+    if len(orig.shape) == 3:
+        orig = orig[:, :, 0]  # Use first channel (all channels are identical)
+    if len(enc.shape) == 3:
+        enc = enc[:, :, 0]  # Use first channel (all channels are identical)
     
-    # Handle color images
-    elif len(orig.shape) == 3:
-        # Grayscale converted histograms
-        orig_gray = rgb_to_grayscale(orig)
-        enc_gray = rgb_to_grayscale(enc)
-        
-        # Original grayscale histogram
-        plt.subplot(2, 2, 1)
-        plt.title('Original Image (Grayscale Converted)')
-        plt.hist(orig_gray.flatten(), bins=256, range=(0, 255), density=True)
-        plt.xlabel('Pixel value')
-        plt.ylabel('Frequency')
-        
-        # Encrypted grayscale histogram
-        plt.subplot(2, 2, 2)
-        plt.title('Encrypted Image (Grayscale Converted)')
-        plt.hist(enc_gray.flatten(), bins=256, range=(0, 255), density=True)
-        plt.xlabel('Pixel value')
-        
-        # Per-channel histograms for encrypted image
-        colors = ['red', 'green', 'blue']
-        for i in range(3):
-            plt.subplot(2, 3, 4 + i)
-            plt.hist(enc[..., i].flatten(), bins=256, range=(0, 255), 
-                     density=True, color=colors[i], alpha=0.7)
-            plt.title(f'Encrypted {colors[i].title()} Channel')
-            plt.xlabel('Pixel value')
-            if i == 0:
-                plt.ylabel('Frequency')
+    fig = plt.figure(figsize=(15, 5))
+    
+    # Original image histogram
+    plt.subplot(1, 2, 1)
+    plt.title('Original Image Histogram')
+    plt.hist(orig.flatten(), bins=256, range=(0, 255), density=True)
+    plt.xlabel('Pixel value')
+    plt.ylabel('Frequency')
+    
+    # Encrypted image histogram
+    plt.subplot(1, 2, 2)
+    plt.title('Encrypted Image Histogram')
+    plt.hist(enc.flatten(), bins=256, range=(0, 255), density=True)
+    plt.xlabel('Pixel value')
     
     plt.tight_layout()
     if save_path:
@@ -97,9 +88,14 @@ def compute_npcr_uaci(orig, enc):
 
 def correlation_coefficients(img):
     """Compute correlation coefficients in horizontal, vertical and diagonal directions"""
-    if len(img.shape) == 3:  # Handle color images
-        # Convert to grayscale for correlation analysis
-        img = rgb_to_grayscale(img)
+    # Convert to grayscale for correlation analysis
+    if len(img.shape) == 3:
+        # If it's a true grayscale image stored as RGB
+        if is_grayscale(img):
+            img = img[:, :, 0]
+        else:
+            # Convert color image to grayscale
+            img = np.dot(img[..., :3], [0.2989, 0.5870, 0.1140]).astype(np.uint8)
     
     h, w = img.shape
     # Horizontal neighbors
@@ -121,11 +117,13 @@ def correlation_coefficients(img):
 
 def entropy(img):
     """Calculate image entropy"""
-    # Flatten all channels for color images
+    # Convert to grayscale if needed
     if len(img.shape) == 3:
-        img = img.flatten()
-    else:
-        img = img.flatten()
+        if is_grayscale(img):
+            img = img[:, :, 0]  # Use first channel
+        else:
+            # Convert color image to grayscale
+            img = np.dot(img[..., :3], [0.2989, 0.5870, 0.1140]).astype(np.uint8)
     
     # Calculate histogram and probabilities
     hist, _ = np.histogram(img, bins=256, range=(0, 255))
@@ -142,7 +140,7 @@ if __name__ == '__main__':
     orig = load_image(original_path, 'RGB')
     enc = load_image(encrypted_path, 'RGB')
     
-    # 1. Histogram Analysis
+    # 1. Histogram Analysis (only for grayscale images)
     print('\n1. Histogram Analysis:')
     plot_histograms(orig, enc, save_path=output_hist_path)
     

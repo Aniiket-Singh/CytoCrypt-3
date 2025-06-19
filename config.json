@@ -1,0 +1,23 @@
+{
+    "chaos_params": {
+        "transient_iterations": 1000,
+        "logistic": {
+            "x0": 0.345,
+            "r": 3.999
+        },
+        "sine": {
+            "x0": 0.456,
+            "a": 0.99
+        },
+        "singer": {
+            "x0": 0.567,
+            "mu": 1.07
+        }
+    },
+    "block_maps": [
+        "logistic",
+        "sine",
+        "singer",
+        "logistic"
+    ]
+}
