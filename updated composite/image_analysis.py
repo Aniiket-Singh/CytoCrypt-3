@@ -8,35 +8,66 @@ import json
 from dna_image_cipher import EnhancedDNAImageCipher  # Import the cipher
 
 # ================= CONFIGURATION =================
-OUTPUT_DIR = "composite_v3"  # Change this to your desired output directory
+OUTPUT_DIR = "composite_rgb_v1"  # Change this to your desired output directory
 PERFORM_AVALANCHE_TEST = True  # Set to False if you don't have avalanche images
-ROUNDS = 3  # Must match the number of rounds used for encryption
+ROUNDS = 1  # Must match the number of rounds used for encryption
 # =================================================
 
 def calculate_entropy(image):
-    """Calculate Shannon entropy of an image"""
-    hist = cv2.calcHist([image], [0], None, [256], [0, 256])
-    hist = hist.ravel() / hist.sum()
-    entropy = -np.sum(hist * np.log2(hist + 1e-10))
-    return entropy
+    """Calculate Shannon entropy for both grayscale and RGB images"""
+    if len(image.shape) == 3:  # RGB image
+        entropies = []
+        for c in range(3):
+            hist = cv2.calcHist([image[:, :, c]], [0], None, [256], [0, 256])
+            hist = hist.ravel() / hist.sum()
+            entropy = -np.sum(hist * np.log2(hist + 1e-10))
+            entropies.append(entropy)
+        return np.mean(entropies)
+    else:  # Grayscale
+        hist = cv2.calcHist([image], [0], None, [256], [0, 256])
+        hist = hist.ravel() / hist.sum()
+        return -np.sum(hist * np.log2(hist + 1e-10))
 
 def plot_histograms(original, encrypted, save_path):
-    """Plot histograms for original and encrypted images with same y-axis"""
-    plt.figure(figsize=(12, 5))
-    
-    plt.subplot(121)
-    plt.hist(original.ravel(), 256, [0, 256], color='blue', alpha=0.7)
-    plt.title('Original Image Histogram')
-    plt.xlabel('Pixel Value')
-    plt.ylabel('Frequency')
-    plt.grid(True, linestyle='--', alpha=0.5)
-    
-    plt.subplot(122)
-    plt.hist(encrypted.ravel(), 256, [0, 256], color='red', alpha=0.7)
-    plt.title('Encrypted Image Histogram')
-    plt.xlabel('Pixel Value')
-    plt.ylabel('Frequency')
-    plt.grid(True, linestyle='--', alpha=0.5)
+    """Plot histograms for original and encrypted images"""
+    if len(original.shape) == 3 or len(encrypted.shape) == 3:
+        # Handle color images
+        fig = plt.figure(figsize=(15, 10))
+        channels = ['Red', 'Green', 'Blue']
+        
+        # Original image histograms
+        for i in range(3):
+            plt.subplot(2, 3, i+1)
+            plt.hist(original[:, :, i].ravel(), 256, [0, 256], color='red', alpha=0.7)
+            plt.title(f'Original {channels[i]} Channel')
+            plt.xlabel('Pixel Value')
+            plt.ylabel('Frequency')
+            plt.grid(True, linestyle='--', alpha=0.5)
+        
+        # Encrypted image histograms
+        for i in range(3):
+            plt.subplot(2, 3, i+4)
+            plt.hist(encrypted[:, :, i].ravel(), 256, [0, 256], color='blue', alpha=0.7)
+            plt.title(f'Encrypted {channels[i]} Channel')
+            plt.xlabel('Pixel Value')
+            plt.ylabel('Frequency')
+            plt.grid(True, linestyle='--', alpha=0.5)
+    else:
+        # Handle grayscale images
+        plt.figure(figsize=(12, 5))
+        plt.subplot(121)
+        plt.hist(original.ravel(), 256, [0, 256], color='blue', alpha=0.7)
+        plt.title('Original Image Histogram')
+        plt.xlabel('Pixel Value')
+        plt.ylabel('Frequency')
+        plt.grid(True, linestyle='--', alpha=0.5)
+        
+        plt.subplot(122)
+        plt.hist(encrypted.ravel(), 256, [0, 256], color='red', alpha=0.7)
+        plt.title('Encrypted Image Histogram')
+        plt.xlabel('Pixel Value')
+        plt.ylabel('Frequency')
+        plt.grid(True, linestyle='--', alpha=0.5)
     
     plt.tight_layout()
     plt.savefig(save_path)
@@ -44,6 +75,16 @@ def plot_histograms(original, encrypted, save_path):
 
 def calculate_correlation(image, direction='horizontal'):
     """Calculate correlation coefficients in specified direction"""
+    if len(image.shape) == 3:  # RGB image
+        corrs = []
+        for c in range(3):
+            corrs.append(_calculate_correlation_2d(image[:, :, c], direction))
+        return np.mean(corrs)
+    else:  # Grayscale
+        return _calculate_correlation_2d(image, direction)
+
+def _calculate_correlation_2d(image, direction='horizontal'):
+    """Calculate correlation coefficients for a 2D image"""
     if direction == 'horizontal':
         pixels = image[:, :-1].flatten()
         adjacent = image[:, 1:].flatten()
@@ -59,7 +100,20 @@ def calculate_correlation(image, direction='horizontal'):
     return pearsonr(pixels, adjacent)[0]
 
 def compute_npcr_uaci(enc1, enc2):
-    """Correct NPCR and UACI calculation between two encrypted images"""
+    """Correct NPCR and UACI calculation for both grayscale and RGB images"""
+    if len(enc1.shape) == 3 and len(enc2.shape) == 3:
+        # RGB image - compute for each channel and average
+        npcr_vals, uaci_vals = [], []
+        for c in range(3):
+            n, u = _compute_npcr_uaci_2d(enc1[:, :, c], enc2[:, :, c])
+            npcr_vals.append(n)
+            uaci_vals.append(u)
+        return np.mean(npcr_vals), np.mean(uaci_vals)
+    else:
+        return _compute_npcr_uaci_2d(enc1, enc2)
+
+def _compute_npcr_uaci_2d(enc1, enc2):
+    """Correct NPCR and UACI calculation for 2D images"""
     assert enc1.shape == enc2.shape
     enc1_flat = enc1.astype(np.float32).flatten()
     enc2_flat = enc2.astype(np.float32).flatten()
@@ -74,6 +128,11 @@ def compute_npcr_uaci(enc1, enc2):
 
 def plot_correlations(original, encrypted, save_path):
     """Plot correlation scatter plots for original and encrypted images"""
+    if len(original.shape) == 3 or len(encrypted.shape) == 3:
+        # For RGB images, plot correlations for the first channel only
+        original = original[:, :, 0] if len(original.shape) == 3 else original
+        encrypted = encrypted[:, :, 0] if len(encrypted.shape) == 3 else encrypted
+    
     directions = ['horizontal', 'vertical', 'diagonal']
     plt.figure(figsize=(15, 10))
     
@@ -120,20 +179,39 @@ def plot_correlations(original, encrypted, save_path):
     plt.close()
 
 def add_gaussian_noise(image, variance):
-    """Add Gaussian noise to image"""
-    noise = np.random.normal(0, variance**0.5, image.shape)
-    noisy_image = np.clip(image.astype(np.float32) + noise, 0, 255)
-    return noisy_image.astype(np.uint8)
+    """Add Gaussian noise to image (supports RGB)"""
+    if len(image.shape) == 3:  # RGB image
+        noisy_image = np.zeros_like(image, dtype=np.float32)
+        for c in range(3):
+            channel = image[:, :, c].astype(np.float32)
+            noise = np.random.normal(0, variance**0.5, channel.shape)
+            noisy_channel = np.clip(channel + noise, 0, 255)
+            noisy_image[:, :, c] = noisy_channel
+        return noisy_image.astype(np.uint8)
+    else:  # Grayscale
+        noise = np.random.normal(0, variance**0.5, image.shape)
+        noisy_image = np.clip(image.astype(np.float32) + noise, 0, 255)
+        return noisy_image.astype(np.uint8)
 
 def add_salt_pepper_noise(image, density):
-    """Add salt and pepper noise to image"""
-    noisy = image.copy()
-    mask = np.random.random(image.shape)
-    salt_mask = mask < density/2
-    pepper_mask = mask > 1 - density/2
-    noisy[salt_mask] = 255
-    noisy[pepper_mask] = 0
-    return noisy
+    """Add salt and pepper noise to image (supports RGB)"""
+    if len(image.shape) == 3:  # RGB image
+        noisy = image.copy()
+        for c in range(3):
+            mask = np.random.random(image.shape[:2])
+            salt_mask = mask < density/2
+            pepper_mask = mask > 1 - density/2
+            noisy[:, :, c][salt_mask] = 255
+            noisy[:, :, c][pepper_mask] = 0
+        return noisy
+    else:  # Grayscale
+        noisy = image.copy()
+        mask = np.random.random(image.shape)
+        salt_mask = mask < density/2
+        pepper_mask = mask > 1 - density/2
+        noisy[salt_mask] = 255
+        noisy[pepper_mask] = 0
+        return noisy
 
 def plot_noise_attack(cipher, encrypted, original, noise_type, densities, save_path):
     """Plot noise attack analysis for either 'salt_pepper' or 'gaussian'"""
@@ -143,7 +221,10 @@ def plot_noise_attack(cipher, encrypted, original, noise_type, densities, save_p
     
     # Original cipher and decrypted
     plt.subplot(rows, cols, 1)
-    plt.imshow(encrypted, cmap='gray')
+    if len(encrypted.shape) == 3:
+        plt.imshow(cv2.cvtColor(encrypted, cv2.COLOR_BGR2RGB))
+    else:
+        plt.imshow(encrypted, cmap='gray')
     plt.title('Original Cipher')
     plt.axis('off')
     
@@ -154,7 +235,10 @@ def plot_noise_attack(cipher, encrypted, original, noise_type, densities, save_p
         save=False  # Return array without saving
     )
     plt.subplot(rows, cols, cols + 1)
-    plt.imshow(orig_decrypted, cmap='gray')
+    if len(orig_decrypted.shape) == 3:
+        plt.imshow(cv2.cvtColor(orig_decrypted, cv2.COLOR_BGR2RGB))
+    else:
+        plt.imshow(orig_decrypted, cmap='gray')
     plt.title('Decrypted Image')
     plt.axis('off')
     
@@ -177,11 +261,17 @@ def plot_noise_attack(cipher, encrypted, original, noise_type, densities, save_p
         
         # Save noisy cipher temporarily
         temp_path = os.path.join(OUTPUT_DIR, f"temp_{noise_type}_{density}.png")
-        cv2.imwrite(temp_path, noisy_cipher)
+        if len(noisy_cipher.shape) == 3:
+            cv2.imwrite(temp_path, cv2.cvtColor(noisy_cipher, cv2.COLOR_RGB2BGR))
+        else:
+            cv2.imwrite(temp_path, noisy_cipher)
         
         # Plot noisy cipher
         plt.subplot(rows, cols, col)
-        plt.imshow(noisy_cipher, cmap='gray')
+        if len(noisy_cipher.shape) == 3:
+            plt.imshow(cv2.cvtColor(noisy_cipher, cv2.COLOR_BGR2RGB))
+        else:
+            plt.imshow(noisy_cipher, cmap='gray')
         plt.title(f'{noise_type.capitalize()} {density}')
         plt.axis('off')
         
@@ -194,7 +284,10 @@ def plot_noise_attack(cipher, encrypted, original, noise_type, densities, save_p
         
         # Plot decrypted image
         plt.subplot(rows, cols, col + cols)
-        plt.imshow(decrypted_noisy, cmap='gray')
+        if len(decrypted_noisy.shape) == 3:
+            plt.imshow(cv2.cvtColor(decrypted_noisy, cv2.COLOR_BGR2RGB))
+        else:
+            plt.imshow(decrypted_noisy, cmap='gray')
         plt.axis('off')
         
         # Calculate and show PSNR
@@ -219,7 +312,7 @@ def main():
     cipher = EnhancedDNAImageCipher("config_enhanced.json")
     
     # Get user input for file paths
-    original_path = "images\lena_grayscale.png"
+    original_path = "images\lena.png"  # Can be grayscale or color
     encrypted_path = os.path.join(OUTPUT_DIR, "encrypted.png")
     decrypted_path = os.path.join(OUTPUT_DIR, "decrypted.png")
     avalanche_mod_path = os.path.join(OUTPUT_DIR, "avalanche_mod.png")
@@ -242,16 +335,22 @@ def main():
             rounds=ROUNDS
         )
     
-    # Load images
-    original = cv2.imread(original_path, cv2.IMREAD_GRAYSCALE)
-    encrypted = cv2.imread(encrypted_path, cv2.IMREAD_GRAYSCALE)
-    decrypted = cv2.imread(decrypted_path, cv2.IMREAD_GRAYSCALE)
+    # Load images in their original color format
+    original = cv2.imread(original_path, cv2.IMREAD_UNCHANGED)
+    encrypted = cv2.imread(encrypted_path, cv2.IMREAD_UNCHANGED)
+    decrypted = cv2.imread(decrypted_path, cv2.IMREAD_UNCHANGED)
     
     # Verify images loaded correctly
     for img, name in zip([original, encrypted, decrypted], 
                          ['Original', 'Encrypted', 'Decrypted']):
         if img is None:
             raise FileNotFoundError(f"{name} image not found at specified path")
+    
+    # Convert to RGB for consistent processing
+    if len(original.shape) == 3 and original.shape[2] == 3:
+        original = cv2.cvtColor(original, cv2.COLOR_BGR2RGB)
+        encrypted = cv2.cvtColor(encrypted, cv2.COLOR_BGR2RGB)
+        decrypted = cv2.cvtColor(decrypted, cv2.COLOR_BGR2RGB)
     
     # 1. Calculate entropy
     orig_entropy = calculate_entropy(original)
@@ -282,22 +381,33 @@ def main():
                 os.path.join(OUTPUT_DIR, "avalanche"), 
                 rounds=ROUNDS
             )
+            # Load avalanche images in RGB format
+            enc_orig = cv2.imread(os.path.join(OUTPUT_DIR, "avalanche_orig.png"), cv2.IMREAD_COLOR)
+            enc_mod = cv2.imread(os.path.join(OUTPUT_DIR, "avalanche_mod.png"), cv2.IMREAD_COLOR)
+            if len(enc_orig.shape) == 3:
+                enc_orig = cv2.cvtColor(enc_orig, cv2.COLOR_BGR2RGB)
+                enc_mod = cv2.cvtColor(enc_mod, cv2.COLOR_BGR2RGB)
+            
             npcr, uaci = compute_npcr_uaci(enc_orig, enc_mod)
             print(f"NPCR (Avalanche): {npcr:.4f}%")
             print(f"UACI (Avalanche): {uaci:.4f}%")
-            
-            # Save avalanche images
-            cv2.imwrite(os.path.join(OUTPUT_DIR, "avalanche_orig.png"), enc_orig)
-            cv2.imwrite(os.path.join(OUTPUT_DIR, "avalanche_mod.png"), enc_mod)
         else:
-            enc_orig = cv2.imread(os.path.join(OUTPUT_DIR, "avalanche_orig.png"), cv2.IMREAD_GRAYSCALE)
-            enc_mod = cv2.imread(os.path.join(OUTPUT_DIR, "avalanche_mod.png"), cv2.IMREAD_GRAYSCALE)
+            enc_orig = cv2.imread(os.path.join(OUTPUT_DIR, "avalanche_orig.png"), cv2.IMREAD_UNCHANGED)
+            enc_mod = cv2.imread(os.path.join(OUTPUT_DIR, "avalanche_mod.png"), cv2.IMREAD_UNCHANGED)
+            if len(enc_orig.shape) == 3:
+                enc_orig = cv2.cvtColor(enc_orig, cv2.COLOR_BGR2RGB)
+                enc_mod = cv2.cvtColor(enc_mod, cv2.COLOR_BGR2RGB)
+            
             npcr, uaci = compute_npcr_uaci(enc_orig, enc_mod)
             print(f"NPCR (Avalanche): {npcr:.4f}%")
             print(f"UACI (Avalanche): {uaci:.4f}%")
         
         # Plot difference between avalanche images
         diff = np.abs(enc_orig.astype(int) - enc_mod.astype(int))
+        if len(diff.shape) == 3:
+            # For RGB, take max difference across channels
+            diff = np.max(diff, axis=2)
+        
         plt.figure(figsize=(10, 5))
         plt.subplot(1, 2, 1)
         plt.imshow(diff, cmap='hot')

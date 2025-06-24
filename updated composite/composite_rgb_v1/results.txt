@@ -1,0 +1,20 @@
+Original Image Entropy: 7.2719
+Encrypted Image Entropy: 7.9980
+
+Horizontal Correlation:
+  Original: 0.960528
+  Encrypted: 0.002496
+
+Vertical Correlation:
+  Original: 0.976471
+  Encrypted: -0.001808
+
+Diagonal Correlation:
+  Original: 0.947842
+  Encrypted: 0.000314
+
+NPCR (Avalanche): 99.5838%
+UACI (Avalanche): 33.6822%
+
+PSNR (Original vs Decrypted): inf dB
+MSE (Original vs Decrypted): 0.0000
