@@ -5,6 +5,11 @@ import numpy as np
 import cv2
 
 def add_gaussian_noise(image, var):
+    """
+    Add zero-mean Gaussian noise to an image.
+    :param image: Input image (H x W x C) in uint8.
+    :param var: Variance of Gaussian noise (e.g., 0.01).
+    """
     mean = 0
     sigma = var ** 0.5
     gauss = np.random.normal(mean, sigma, image.shape).astype('float32')
@@ -12,25 +17,34 @@ def add_gaussian_noise(image, var):
     noisy = np.clip(noisy, 0, 255).astype('uint8')
     return noisy
 
+
 def add_salt_pepper_noise(image, amount):
+    """
+    Add salt-and-pepper noise to an image.
+    :param image: Input image (H x W x C) in uint8.
+    :param amount: Fraction of pixels to alter (e.g., 0.05 for 5%).
+    """
     noisy = image.copy()
-    # amount is fraction of pixels to alter
-    num_pixels = np.product(image.shape[:2])
-    num_salt = np.ceil(amount * num_pixels * 0.5).astype(int)
-    num_pepper = np.ceil(amount * num_pixels * 0.5).astype(int)
+    # Total number of pixels (height x width)
+    num_pixels = np.prod(image.shape[:2])
+    # Half salt, half pepper
+    num_salt = int(np.ceil(amount * num_pixels * 0.5))
+    num_pepper = int(np.ceil(amount * num_pixels * 0.5))
 
     # Salt noise (white pixels)
     coords = [
-        np.random.randint(0, i - 1, num_salt) for i in image.shape[:2]
+        np.random.randint(0, dim, num_salt) for dim in image.shape[:2]
     ]
     noisy[coords[0], coords[1]] = 255
 
     # Pepper noise (black pixels)
     coords = [
-        np.random.randint(0, i - 1, num_pepper) for i in image.shape[:2]
+        np.random.randint(0, dim, num_pepper) for dim in image.shape[:2]
     ]
     noisy[coords[0], coords[1]] = 0
+
     return noisy
+
 
 def parse_arguments():
     parser = argparse.ArgumentParser(
@@ -39,12 +53,12 @@ def parse_arguments():
     parser.add_argument(
         'noise_type',
         choices=['gaussian', 'sp'],
-        help='Type of noise to add (gaussian or sp).'
+        help='Type of noise to add: "gaussian" or "sp".'
     )
     parser.add_argument(
         'intensity',
         type=float,
-        help='Intensity of noise: variance for gaussian, fraction for sp (e.g., 0.05 for 5%%).'
+        help='Intensity of noise: variance for Gaussian, fraction for SP (e.g., 0.05 for 5%%).'
     )
     parser.add_argument(
         'image_path',
@@ -52,10 +66,11 @@ def parse_arguments():
     )
     parser.add_argument(
         '--output',
-        help='Path to save the noisy image. If not provided, a default name will be used.',
-        default=None
+        default=None,
+        help='Path to save the noisy image (optional).'
     )
     return parser.parse_args()
+
 
 def main():
     args = parse_arguments()
@@ -86,6 +101,7 @@ def main():
     # Save the noisy image
     cv2.imwrite(output_path, noisy_img)
     print(f"Noisy image saved to: {output_path}")
+
 
 if __name__ == '__main__':
     main()

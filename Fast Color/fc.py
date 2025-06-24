@@ -116,16 +116,20 @@ class ImageEncryptor:
         return output
     
     def _generate_keys(self, image_bytes):
-        """Generate keys using SHA-256"""
+        """Generate keys using SHA-256 with overflow handling"""
         sha_hash = hashlib.sha256(image_bytes).digest()
         V = np.frombuffer(sha_hash, dtype=np.uint8)
         
-        K = np.zeros(8)
-        for i in range(8):
-            val = (V[4*i] << 24) | (V[4*i+1] << 16) | (V[4*i+2] << 8) | V[4*i+3]
-            prev = 1 if i == 0 else K[i-1]
-            K[i] = (prev + 5 * val) / (2**64)
+        K = np.zeros(8, dtype=np.float64)  # Use float64 for precision
+        divisor = 2.0**64  # Precompute divisor
         
+        for i in range(8):
+            # Use integer arithmetic to avoid overflow
+            val = int(V[4*i]) << 24 | int(V[4*i+1]) << 16 | int(V[4*i+2]) << 8 | int(V[4*i+3])
+            prev = 1.0 if i == 0 else K[i-1]
+            K[i] = (prev + 5.0 * val) / divisor
+        
+        # Rest of the function remains the same
         A_bar = np.array([4, 3, 2, 2, 0.4, 0.3])
         A = np.zeros(6)
         A[:3] = A_bar[:3] + (np.sum(K[:4]) * 2**10 * 255) % 256 / 256
@@ -193,32 +197,67 @@ class ImageEncryptor:
         return unscrambled
     
     def _1d_diffusion(self, channel, seq):
-        """Improved CBC-mode diffusion"""
-        arr = channel.flatten().copy()
+        """Correct diffusion implementation matching paper specification"""
+        arr = channel.flatten().copy().astype(np.uint32)  # Use 32-bit for intermediate calculations
         n = len(arr)
-        terms = (seq[:n] * 255).astype(np.uint8)
         
-        arr[0] = (arr[0] ^ terms[0]) & 0xFF
-        for i in range(1, n):
-            arr[i] = (arr[i] ^ arr[i-1] ^ terms[i]) & 0xFF
-        return arr.reshape(channel.shape)
-    
+        # Convert to float64 for large exponentiation
+        seq_f64 = seq[:n].astype(np.float64)
+        terms = (seq_f64 * (32**32)) % 255
+        terms = terms.astype(np.uint8)
+        
+        # Last two elements for circular reference
+        last1 = arr[-1]
+        last2 = arr[-2]
+        
+        # Paper's diffusion formula (Equation 4)
+        for i in range(n):
+            if i == 0:
+                arr[i] = (arr[i] ^ last1 ^ last2 ^ terms[i]) & 0xFF
+            elif i == 1:
+                arr[i] = (arr[i] ^ arr[i-1] ^ last1 ^ terms[i]) & 0xFF
+            else:
+                arr[i] = (arr[i] ^ arr[i-1] ^ arr[i-2] ^ terms[i]) & 0xFF
+        
+        return arr.astype(np.uint8).reshape(channel.shape)
+
     def _reverse_1d_diffusion(self, channel, seq):
-        """Reverse CBC-mode diffusion"""
-        arr = channel.flatten().copy()
+        """Inverse diffusion for decryption"""
+        arr = channel.flatten().copy().astype(np.uint32)
         n = len(arr)
-        terms = (seq[:n] * 255).astype(np.uint8)
         
-        for i in range(n-1, 0, -1):
-            arr[i] = (arr[i] ^ arr[i-1] ^ terms[i]) & 0xFF
-        arr[0] = (arr[0] ^ terms[0]) & 0xFF
-        return arr.reshape(channel.shape)
+        seq_f64 = seq[:n].astype(np.float64)
+        terms = (seq_f64 * (32**32)) % 255
+        terms = terms.astype(np.uint8)
+        
+        # Create temporary array to store original values
+        orig = arr.copy()
+        
+        # Process in reverse order
+        for i in range(n-1, -1, -1):
+            if i == 0:
+                # Recover original value before diffusion
+                current = arr[i]
+                arr[i] = (current ^ orig[-1] ^ orig[-2] ^ terms[i]) & 0xFF
+            elif i == 1:
+                current = arr[i]
+                arr[i] = (current ^ arr[0] ^ orig[-1] ^ terms[i]) & 0xFF
+            else:
+                current = arr[i]
+                arr[i] = (current ^ arr[i-1] ^ arr[i-2] ^ terms[i]) & 0xFF
+        
+        return arr.astype(np.uint8).reshape(channel.shape)
     
     def _dna_encode(self, channel, rule):
         """Encode a channel using DNA coding rule"""
         binary = np.unpackbits(channel.astype(np.uint8).reshape(-1, 1), axis=1)[:, :8]
         bases = binary.reshape(-1, 4, 2)
         encoded = np.zeros((bases.shape[0], 4), dtype='U1')
+
+        unique, counts = np.unique(encoded, return_counts=True)
+        print(f"DNA Base Distribution (Rule {rule}):")
+        for base, count in zip(unique, counts):
+            print(f"{base}: {count}")
         
         for i in range(bases.shape[0]):
             for j in range(4):
@@ -252,11 +291,21 @@ class ImageEncryptor:
                     result[i, j, k] = DNA_XOR_TABLE[base1][base2]
         return result
     
+    def _plot_sequence_histogram(self, seq, filename):
+        plt.figure(figsize=(10, 6))
+        plt.hist(seq, bins=50, density=True)
+        plt.title('Sequence Uniformity Check')
+        plt.xlabel('Value')
+        plt.ylabel('Frequency')
+        plt.savefig(filename)
+        plt.close()
+
     def _process_channel_encrypt(self, channel_idx):
         """Process a single channel for encryption"""
         channel = self.original_image[:, :, channel_idx].copy()
         permuted = self._3d_permutation_vectorized(channel)
         seq_x, seq_y = self._motdcm(self.A, self.height * self.width)
+        self._plot_sequence_histogram(seq_x, f'seq_x_ch{channel_idx}.png')
         seq_s1, seq_s2 = self._fhccs(self.B, self.height * self.width)
         scrambled, _ = self._global_scrambling(permuted, seq_s1)
         diffused = self._1d_diffusion(scrambled, seq_x)
